@@ -1,31 +1,105 @@
-name: Ausbildung Scraper Automated Pipeline
+name: "🇩🇪 Ausbildung Scraper — Pipeline Automatisé"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DÉCLENCHEURS
+# ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    # Exécution automatique toutes les 6 heures (00h, 06h, 12h, 18h UTC)
-    - cron: '0 */6 * * *'
-  workflow_dispatch: # Permet aussi un déclenchement manuel en 1 clic sur GitHub
+    # Tous les jours à 03h00 UTC (04h00 heure d'Europe centrale)
+    - cron: "0 3 * * *"
 
+  # Déclenchement manuel en 1 clic depuis l'onglet "Actions" sur GitHub
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: "Mode debug (afficher plus de logs)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERMISSIONS
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents: write    # Pour committer le CSV mis à jour
+  actions: read
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   scrape_and_push:
+    name: "Scraper Ausbildung Kaufmann"
     runs-on: ubuntu-latest
+    timeout-minutes: 55    # Timeout large pour le deep scraping
 
     steps:
-      - name: Checkout du code source
+      # ── 1. Récupérer le code du repository ──────────────────────────────
+      - name: "📥 Checkout du code source"
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Configuration de Python 3.12
+      # ── 2. Configurer Python 3.10 ────────────────────────────────────────
+      - name: "🐍 Configuration Python 3.10"
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.10"
+          cache: "pip"
 
-      - name: Installation des dépendances Python
+      # ── 3. Installer les dépendances ─────────────────────────────────────
+      - name: "📦 Installation des dépendances Python"
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 lxml
 
-      - name: Exécution du Scraper & Envoi direct vers Google Sheet
+      # ── 4. Restaurer le CSV existant (cache entre runs) ──────────────────
+      - name: "♻️ Restauration du cache CSV (évite les doublons)"
+        uses: actions/cache@v4
+        with:
+          path: ausbildung_applications_export.csv
+          key: ausbildung-csv-${{ runner.os }}-${{ hashFiles('ausbildung_scraper.py') }}
+          restore-keys: |
+            ausbildung-csv-${{ runner.os }}-
+
+      # ── 5. Exécuter le scraper ────────────────────────────────────────────
+      - name: "🔍 Exécution du Scraper Ausbildung"
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          PYTHONUNBUFFERED: "1"
+          PYTHONIOENCODING: "utf-8"
         run: |
+          echo "======================================================"
+          echo " Démarrage scraper : $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================================"
           python ausbildung_scraper.py
+          echo ""
+          echo "======================================================"
+          echo " Scraper terminé : $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================================"
+
+      # ── 6. Afficher le résumé du CSV ──────────────────────────────────────
+      - name: "📊 Résumé du CSV généré"
+        if: always()
+        run: |
+          if [ -f "ausbildung_applications_export.csv" ]; then
+            TOTAL=$(wc -l < ausbildung_applications_export.csv)
+            echo "Offres totales dans le CSV : $((TOTAL - 1))"
+            echo "Aperçu des 5 dernières offres ajoutées :"
+            tail -5 ausbildung_applications_export.csv
+          else
+            echo "[!] CSV non généré."
+          fi
+
+      # ── 7. Committer le CSV mis à jour dans le repo ───────────────────────
+      - name: "💾 Commit du CSV mis à jour"
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "bot: maj CSV ausbildung $(date '+%Y-%m-%d %H:%M') UTC"
+          file_pattern: "ausbildung_applications_export.csv"
+          commit_user_name: "Ausbildung Bot"
+          commit_user_email: "actions@github.com"
+          skip_dirty_check: false
