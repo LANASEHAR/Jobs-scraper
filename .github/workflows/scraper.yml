@@ -1,0 +1,31 @@
+name: Ausbildung Scraper Automated Pipeline
+
+on:
+  schedule:
+    # Exécution automatique toutes les 6 heures (00h, 06h, 12h, 18h UTC)
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Permet aussi un déclenchement manuel en 1 clic sur GitHub
+
+jobs:
+  scrape_and_push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code source
+        uses: actions/checkout@v4
+
+      - name: Configuration de Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installation des dépendances Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Exécution du Scraper & Envoi direct vers Google Sheet
+        env:
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+        run: |
+          python ausbildung_scraper.py
