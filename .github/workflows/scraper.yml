@@ -1,0 +1,74 @@
+name: Ausbildung Scraper Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ausbildung_scraper.py'
+      - '.github/workflows/scraper.yml'
+      - 'requirements.txt'
+  schedule:
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  scrape_and_push:
+    name: Scraper Ausbildung Kaufmann
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Ausbildung Scraper
+        env:
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          PYTHONUNBUFFERED: '1'
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          echo '================================================'
+          echo "Scraper started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo '================================================'
+          python ausbildung_scraper.py
+          echo '================================================'
+          echo "Scraper finished at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo '================================================'
+
+      - name: Show CSV summary
+        if: always()
+        run: |
+          if [ -f 'ausbildung_applications_export.csv' ]; then
+            TOTAL=$(wc -l < ausbildung_applications_export.csv)
+            echo "Total offers in CSV: $((TOTAL - 1))"
+            echo 'Last 5 offers:'
+            tail -5 ausbildung_applications_export.csv
+          else
+            echo 'WARNING: CSV was not generated'
+          fi
+
+      - name: Commit updated CSV
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'bot: update ausbildung CSV run ${{ github.run_number }}'
+          file_pattern: 'ausbildung_applications_export.csv'
+          commit_user_name: 'Ausbildung Bot'
+          commit_user_email: 'actions@github.com'
+          skip_dirty_check: false
