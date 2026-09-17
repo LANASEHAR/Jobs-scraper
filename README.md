@@ -4,17 +4,15 @@ A separate job-hunting pipeline for Safae/Halima's remote career search.
 
 ## Goal
 
-Find worldwide remote roles from LinkedIn that fit the profile in the current CV: Customer Success, Account Management, Sales/Business Development, Customer Support, Operations, Administration, E-commerce/Shopify, CRM/Back Office and junior UX/UI. The CV lists 5+ years across these areas, multilingual communication (Arabic, French C1, English C1, German B2 in progress), and tools including Salesforce, Zendesk, Shopify, Sage, Excel, Figma, Canva and Google Workspace. fileciteturn0file0L8-L34
+Find worldwide remote roles from LinkedIn that fit the current profile: Customer Success, Account Management, Sales/Business Development, Customer Support, Operations, Administration, E-commerce/Shopify, CRM/Back Office and junior UX/UI.
 
 ## Architecture
 
 1. **LinkedIn discovery** — searches remote LinkedIn job pages using multiple target-role queries.
 2. **Immediate Sheet write** — discovered jobs are sent to Google Sheets immediately; no deep search blocks discovery.
 3. **Deep search** — a separate run reads pending rows, finds the company's official website and checks contact/career pages.
-4. **Enrichment** — company site, verified-looking public email(s), and deep-search status are written back to the same row using the stable job ID.
+4. **Enrichment** — company site, public email(s), and deep-search status are written back to the same row using the stable job ID.
 5. **Deduplication** — stable IDs prevent the same LinkedIn offer from being inserted twice.
-
-The CV's current role is Administrative and Commercial Assistant, with logistics/order follow-up, supplier communication, B2B/B2C customer service, Shopify/e-commerce, marketing assets and Excel reporting; the previous role managed 600+ B2B travel-agency accounts and onboarding/upselling. fileciteturn0file0L35-L55
 
 ## Important behavior
 
@@ -54,7 +52,7 @@ Never commit that URL or other secrets to source code.
 
 GitHub Actions → **Remote Jobs Scraper** → Run workflow.
 
-The workflow also runs hourly. The two jobs are independent: discovery writes first, while deep search can run separately/concurrently.
+The workflow also runs hourly. Discovery and deep search are independent jobs, so the expensive enrichment phase does not block initial capture.
 
 ## Local commands
 
@@ -67,4 +65,4 @@ python remote_scraper.py --mode deep
 
 **LinkedIn → Sheet immediately → Deep Search → Company Site/Email update**
 
-This keeps the discovery pipeline fast and makes the expensive research phase independently retryable.
+This keeps the discovery pipeline fast and makes the research phase independently retryable.
