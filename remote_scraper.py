@@ -1,4 +1,5 @@
 """Remote jobs scraper: LinkedIn discovery -> Google Sheet -> company/email deep search."""
+# Robust webhook pending-read fallback: GET JSON -> POST JSON.
 import argparse, hashlib, os, random, re, time
 from urllib.parse import quote_plus, urljoin, urlparse
 import requests
