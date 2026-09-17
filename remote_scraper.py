@@ -84,6 +84,16 @@ def parse_json_response(r,context):
     if not text:raise RuntimeError(f"Webhook returned empty response during {context} (HTTP {r.status_code})")
     try:return r.json()
     except ValueError as exc:raise RuntimeError(f"Webhook returned non-JSON during {context}: {re.sub(r'\\s+',' ',text)[:250]!r}") from exc
+def pending_jobs():
+    r=requests.get(WEBHOOK,params={"action":"pending","limit":500},timeout=30,allow_redirects=True)
+    try:r.raise_for_status()
+    except requests.HTTPError as first:
+        print(f"[Sheet GET] failed: {first}; trying POST")
+        r=requests.post(WEBHOOK,json={"mode":"pending","limit":500},timeout=30,allow_redirects=True);r.raise_for_status()
+    try:return parse_json_response(r,"pending read")
+    except RuntimeError as first:
+        print(f"[Sheet GET] non-JSON: {first}; trying POST fallback")
+        r=requests.post(WEBHOOK,json={"mode":"pending","limit":500},timeout=30,allow_redirects=True);r.raise_for_status();return parse_json_response(r,"pending POST fallback")
 def discover_company_site(company):
     if not company or company=="Unknown":return None
     html=fetch(f"https://html.duckduckgo.com/html/?q={quote_plus(chr(34)+company+chr(34)+' official website careers jobs')}")
@@ -111,9 +121,9 @@ def deep_search_job(job):
     return {"id":job["id"],"company_site":site,"emails_rh":" / ".join(ranked[:3]),"deep_status":"DONE" if pages_seen else "SITE_FOUND_NO_PAGES"}
 def deep_run(limit=100):
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    r=requests.get(WEBHOOK,params={"action":"pending","limit":min(limit,500)},timeout=30);r.raise_for_status();data=parse_json_response(r,"pending read");jobs=data.get("jobs",data if isinstance(data,list) else [])
+    data=pending_jobs();jobs=data.get("jobs",data if isinstance(data,list) else [])
     if not isinstance(jobs,list):raise RuntimeError(f"Unexpected pending response shape: {type(jobs).__name__}")
-    updates=[]
+    jobs=jobs[:min(limit,500)];updates=[]
     for i,job in enumerate(jobs,1):
         print(f"[DEEP] {i}/{len(jobs)} {job.get('entreprise')} — {job.get('intitule')}")
         try:updates.append(deep_search_job(job))
