@@ -2,11 +2,14 @@ name: Remote Jobs Scraper
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     - cron: '15 * * * *'
 
 jobs:
   scrape:
+    if: ${{ github.event_name != 'push' || github.event.head_commit.message == 'Run remote scraper now' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
