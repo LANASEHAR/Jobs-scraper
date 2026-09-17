@@ -1,5 +1,4 @@
 """Remote jobs scraper: LinkedIn discovery -> Google Sheet -> company/email deep search."""
-# Robust webhook pending-read fallback: GET JSON -> POST JSON.
 import argparse, hashlib, os, random, re, time
 from urllib.parse import quote_plus, urljoin, urlparse
 import requests
@@ -58,8 +57,7 @@ def scrape_linkedin(max_pages=3,max_per_query=25):
         for page in range(max_pages):
             url=f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(query)}&f_WT=2&start={page*25}"
             print(f"[LinkedIn] {query} page={page+1}");html=fetch(url)
-            if not html:
-                print("  [!] direct LinkedIn unavailable");break
+            if not html:print("  [!] direct LinkedIn unavailable");break
             jobs=parse_linkedin_search(html);direct=direct or bool(jobs);added=0
             for j in jobs[:max_per_query]:
                 if j["id"] not in seen:seen.add(j["id"]);all_jobs.append(j);added+=1
@@ -76,25 +74,34 @@ def post(payload):
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
     for attempt in range(3):
         try:
-            r=requests.post(WEBHOOK,json=payload,timeout=30);r.raise_for_status();print("[Sheet POST]",r.status_code,r.text[:300]);return
+            r=requests.post(WEBHOOK,json=payload,timeout=(10,60),allow_redirects=True);r.raise_for_status();print("[Sheet POST]",r.status_code,r.text[:300]);return True
         except requests.RequestException as exc:
-            if attempt==2:raise RuntimeError(f"Sheet webhook POST failed: {exc}")
+            print(f"[Sheet POST] attempt {attempt+1}/3 failed: {exc}")
+            if attempt==2: return False
             time.sleep(2**attempt)
+    return False
 def parse_json_response(r,context):
     text=(r.text or "").strip()
     if not text:raise RuntimeError(f"Webhook returned empty response during {context} (HTTP {r.status_code})")
     try:return r.json()
     except ValueError as exc:raise RuntimeError(f"Webhook returned non-JSON during {context}: {re.sub(r'\\s+',' ',text)[:250]!r}") from exc
 def pending_jobs():
-    r=requests.get(WEBHOOK,params={"action":"pending","limit":500},timeout=30,allow_redirects=True)
-    try:r.raise_for_status()
-    except requests.HTTPError as first:
-        print(f"[Sheet GET] failed: {first}; trying POST")
-        r=requests.post(WEBHOOK,json={"mode":"pending","limit":500},timeout=30,allow_redirects=True);r.raise_for_status()
-    try:return parse_json_response(r,"pending read")
-    except RuntimeError as first:
-        print(f"[Sheet GET] non-JSON: {first}; trying POST fallback")
-        r=requests.post(WEBHOOK,json={"mode":"pending","limit":500},timeout=30,allow_redirects=True);r.raise_for_status();return parse_json_response(r,"pending POST fallback")
+    if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
+    # Apps Script web apps can return an HTML wrapper/redirect. Prefer GET, then POST.
+    for attempt in range(3):
+        try:
+            r=requests.get(WEBHOOK,params={"action":"pending","limit":100},timeout=(10,60),allow_redirects=True);r.raise_for_status()
+            try:return parse_json_response(r,"pending GET")
+            except RuntimeError as exc:print(f"[Sheet GET] non-JSON: {exc}")
+        except requests.RequestException as exc:print(f"[Sheet GET] attempt {attempt+1}/3 failed: {exc}")
+        try:
+            r=requests.post(WEBHOOK,json={"mode":"pending","limit":100},timeout=(10,60),allow_redirects=True);r.raise_for_status()
+            try:return parse_json_response(r,"pending POST")
+            except RuntimeError as exc:print(f"[Sheet POST] non-JSON: {exc}")
+        except requests.RequestException as exc:print(f"[Sheet POST] attempt {attempt+1}/3 failed: {exc}")
+        if attempt<2:time.sleep(2**attempt)
+    print("[Sheet] Pending read unavailable; skipping this deep-search cycle instead of failing workflow")
+    return {"status":"unavailable","jobs":[]}
 def discover_company_site(company):
     if not company or company=="Unknown":return None
     html=fetch(f"https://html.duckduckgo.com/html/?q={quote_plus(chr(34)+company+chr(34)+' official website careers jobs')}")
@@ -124,18 +131,20 @@ def deep_run(limit=100):
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
     data=pending_jobs();jobs=data.get("jobs",data if isinstance(data,list) else [])
     if not isinstance(jobs,list):raise RuntimeError(f"Unexpected pending response shape: {type(jobs).__name__}")
-    jobs=jobs[:min(limit,500)];updates=[]
+    jobs=jobs[:min(limit,100)];updates=[]
     for i,job in enumerate(jobs,1):
         print(f"[DEEP] {i}/{len(jobs)} {job.get('entreprise')} — {job.get('intitule')}")
         try:updates.append(deep_search_job(job))
         except Exception as exc:updates.append({"id":job.get("id"),"deep_status":"ERROR","deep_error":str(exc)[:200]})
-        if len(updates)>=10:post({"mode":"enrich","updates":updates});updates=[]
-    if updates:post({"mode":"enrich","updates":updates})
+        if len(updates)>=10:
+            if not post({"mode":"enrich","updates":updates}):print("[DEEP] batch enrichment failed; continuing")
+            updates=[]
+    if updates and not post({"mode":"enrich","updates":updates}):print("[DEEP] final enrichment failed; continuing")
 def main():
     p=argparse.ArgumentParser();p.add_argument("--mode",choices=["scrape","deep"],default="scrape");p.add_argument("--pages",type=int,default=int(os.getenv("LINKEDIN_MAX_PAGES","3")));p.add_argument("--deep-limit",type=int,default=int(os.getenv("DEEP_LIMIT","100")));a=p.parse_args()
     if a.mode=="scrape":
         jobs=scrape_linkedin(a.pages)
-        if jobs:post({"mode":"jobs","jobs":jobs})
+        if jobs and not post({"mode":"jobs","jobs":jobs}):print("[Scrape] Sheet POST failed; workflow will continue")
         print(f"DONE: {len(jobs)} LinkedIn jobs discovered and sent to Sheet")
     else:deep_run(a.deep_limit)
 if __name__=="__main__":main()
