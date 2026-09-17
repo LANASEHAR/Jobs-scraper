@@ -15,10 +15,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - name: Discover LinkedIn jobs and write immediately
+      - name: Discover LinkedIn jobs and write during discovery
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-        run: python morocco_jobs.py --mode scrape
+        run: python morocco_jobs_live.py --mode scrape
 
   deep-search:
     needs: discover
@@ -33,4 +33,4 @@ jobs:
       - name: Deep-search pending Morocco jobs
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-        run: python morocco_jobs.py --mode deep --deep-limit 100
+        run: python morocco_jobs_live.py --mode deep --deep-limit 100
