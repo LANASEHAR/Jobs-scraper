@@ -6,33 +6,16 @@ import requests
 from bs4 import BeautifulSoup
 
 WEBHOOK=os.getenv("GOOGLE_SHEET_WEBHOOK_URL","").strip()
-# Exactly 23 research families. Each family expands into multiple search variants.
 SEARCHES=[
  ("Customer Success",["customer success","client success","customer retention","customer onboarding"]),
- ("Customer Support",["customer support","customer service","customer care","technical support"]),
- ("Customer Experience",["customer experience","client experience","CX","customer relations"]),
- ("Account Management",["account management","account manager","client account","key account"]),
+ ("Account Manager",["account manager","account management","client account","key account"]),
  ("Account Executive",["account executive","account sales","sales account"]),
  ("Sales",["sales","selling","commercial","revenue"]),
- ("Business Development",["business development","business growth","partnerships","BD"]),
- ("SDR",["sales development","lead generation","outbound sales","SDR"]),
- ("BDR",["business development","business development representative","BDR"]),
- ("Inside Sales",["inside sales","telesales","phone sales","outbound"]),
- ("Commercial",["commercial","business development","sales operations"]),
- ("Operations",["operations","business operations","process operations"]),
- ("Sales Operations",["sales operations","revenue operations","sales support","CRM operations"]),
  ("Administrative",["administration","administrative","office operations","back office"]),
- ("Project Coordination",["project coordination","project support","project operations"]),
- ("E-commerce",["e-commerce","ecommerce","online store","marketplace"]),
- ("Shopify",["shopify","shopify store","shopify ecommerce"]),
- ("CRM",["CRM","customer relationship","CRM operations","customer database"]),
- ("Design",["designer","design","graphic design","digital design","visual design"]),
- ("Customer Relations",["client relations","customer relations","client services"]),
- ("Client Services",["client services","client management","customer services"]),
- ("Marketplace",["marketplace","online marketplace","e-commerce marketplace"]),
- ("Remote Commercial",["remote sales","remote customer success","remote support","remote operations"])
+ ("Design",["designer","design","graphic design","digital design","visual design"])
 ]
-VARIANTS=[v for _,vs in SEARCHES for v in vs]\nKEYWORD_QUERIES=[" OR ".join(vs) for _,vs in SEARCHES]
+VARIANTS=[v for _,vs in SEARCHES for v in vs]
+KEYWORD_QUERIES=[" OR ".join(vs) for _,vs in SEARCHES]
 EXCLUDE=["director","vice president","vp ","head of ","chief","architect","doctor","nurse","software engineer","developer","data scientist","machine learning","devops","lawyer","accountant","physician","warehouse worker","driver","internship","intern "]
 UA=["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36","Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36"]
 S=requests.Session()
@@ -42,7 +25,7 @@ BLOCKED={"linkedin.com","facebook.com","instagram.com","twitter.com","x.com","in
 PATHS=["","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us","/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers","/fr/contact"]
 
 def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-def clean(x): return re.sub(r"\s+"," ",str(x or "")).strip()
+def clean(x): return re.sub(r"\s+", " ", str(x or "")).strip()
 def hdr(): return {"User-Agent":random.choice(UA),"Accept-Language":"en-US,en;q=0.9,fr;q=0.8","Accept":"text/html,application/xhtml+xml"}
 def fetch(url,timeout=15,retries=0):
     for i in range(retries+1):
@@ -98,7 +81,6 @@ def parse_linkedin(html,remote,search_type):
     return out
 
 def linkedin_guest_search(keywords,location,remote,search_type):
-    # Paginate until LinkedIn exhausts the public guest result set. No artificial result cap.
     out=[];start=0
     while True:
         params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r86400&start={start}"
@@ -114,38 +96,6 @@ def linkedin_guest_search(keywords,location,remote,search_type):
         time.sleep(2.5+random.random()*2)
     return out
 
-def web_search(q,limit=10):
-    """Fast resilient public search. Avoids waiting through dead providers on every query."""
-    providers=[
-      ("Bing","https://www.bing.com/search?q="+quote_plus(q),7),
-      ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q),7),
-      ("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q),7),
-      ("Google","https://www.google.com/search?q="+quote_plus(q),7)
-    ]
-    for name,u,timeout in providers:
-        if name.startswith("DDG") and DDG_DISABLED: continue
-        try:
-            r=S.get(u,headers=hdr(),timeout=timeout,allow_redirects=True)
-            if r.status_code!=200 or not r.text:
-                print(f"[SEARCH] {name} status={r.status_code}",flush=True)
-                if name.startswith("DDG"): register_ddg_failure()
-                continue
-            soup=BeautifulSoup(r.text,"html.parser");items=[]
-            for sel in ["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]:
-                for a in soup.select(sel):
-                    href=a.get("href","");title=clean(a.get_text(" ",strip=True))
-                    if href.startswith("/url?q="): href=href.split("/url?q=",1)[1].split("&",1)[0]
-                    if href.startswith("http") and title: items.append((title,href))
-                if items: break
-            if items:
-                if name.startswith("DDG"): reset_ddg_failures()
-                return items[:limit]
-            if name.startswith("DDG"): register_ddg_failure()
-        except requests.RequestException as e:
-            print(f"[SEARCH] {name} error: {type(e).__name__}",flush=True)
-            if name.startswith("DDG"): register_ddg_failure()
-    return []
-
 DDG_FAILURES=0
 DDG_DISABLED=False
 def register_ddg_failure():
@@ -156,15 +106,40 @@ def register_ddg_failure():
         print("[SEARCH] DDG circuit breaker ON for this run.",flush=True)
 def reset_ddg_failures():
     global DDG_FAILURES,DDG_DISABLED
-    DDG_FAILURES=0
-    DDG_DISABLED=False
+    DDG_FAILURES=0;DDG_DISABLED=False
+
+def web_search(q,limit=10):
+    providers=[("Bing","https://www.bing.com/search?q="+quote_plus(q),7),("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q),7),("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q),7),("Google","https://www.google.com/search?q="+quote_plus(q),7)]
+    for name,u,timeout in providers:
+        if name.startswith("DDG") and DDG_DISABLED:continue
+        try:
+            r=S.get(u,headers=hdr(),timeout=timeout,allow_redirects=True)
+            if r.status_code!=200 or not r.text:
+                print(f"[SEARCH] {name} status={r.status_code}",flush=True)
+                if name.startswith("DDG"):register_ddg_failure()
+                continue
+            soup=BeautifulSoup(r.text,"html.parser");items=[]
+            for sel in ["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]:
+                for a in soup.select(sel):
+                    href=a.get("href","");title=clean(a.get_text(" ",strip=True))
+                    if href.startswith("/url?q="):href=href.split("/url?q=",1)[1].split("&",1)[0]
+                    if href.startswith("http") and title:items.append((title,href))
+                if items:break
+            if items:
+                if name.startswith("DDG"):reset_ddg_failures()
+                return items[:limit]
+            if name.startswith("DDG"):register_ddg_failure()
+        except requests.RequestException as e:
+            print(f"[SEARCH] {name} error: {type(e).__name__}",flush=True)
+            if name.startswith("DDG"):register_ddg_failure()
+    return []
+
 def company_from_linkedin_url(url):
     m=re.search(r"-at-([^-]+(?:-[^-]+){0,8})-(\d{6,})/?$",url)
     return clean(m.group(1).replace("-"," ")).title() if m else ""
 
 def linkedin_web_fallback(keywords,location,remote,search_type):
-    queries=[f'site:linkedin.com/jobs/view "{keywords}" "{location}"',
-             f'site:linkedin.com/jobs/view "{keywords}" Morocco'] if remote else [f'site:linkedin.com/jobs/view "{keywords}" Casablanca']
+    queries=[f'site:linkedin.com/jobs/view "{keywords}" "{location}"',f'site:linkedin.com/jobs/view "{keywords}" Morocco'] if remote else [f'site:linkedin.com/jobs/view "{keywords}" Casablanca']
     out=[];seen=set()
     for q in queries:
         for title,url in web_search(q,20):
@@ -228,23 +203,19 @@ def parse_web_jobs(items,kind,remote):
         m=re.search(r"\s(?:at|chez|@)\s+(.+)$",title,re.I)
         if m:company=clean(m.group(1))
         if not company:company=clean(host.split(".")[0]).title()
-        out.append(job(title,company,"Casablanca" if kind=="CASABLANCA_ONSITE" else ("Morocco" if kind=="MOROCCO_REMOTE" else "Remote / Worldwide"),remote,"Web Search",url,"","",kind))
+        out.append(job(title,company,"Casablanca" if kind=="CASABLANCA_ONSITE" else ("Morocco" if kind=="MOROCCO_REMOTE" else "Remote / Worldwide"),remote,"Web Search",url,"","","",kind))
     return out
 
 def public_web_jobs():
     out=[];seen=set()
     for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
         for kind,place,remote in [("WORLDWIDE_REMOTE","remote worldwide",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
-                queries=[
-                  f'({keyword_query}) {place} jobs last 24 hours',
-                  f'({keyword_query}) {place} emploi recrutement',
-                  f'({keyword_query}) {place} site:indeed.com OR site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma'
-                ]
-                for sq in queries:
-                    items=web_search(sq,20)
-                    for j in parse_web_jobs(items,kind,remote):
-                        if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-                    time.sleep(.7)
+            queries=[f'({keyword_query}) {place} jobs last 24 hours',f'({keyword_query}) {place} emploi recrutement',f'({keyword_query}) {place} site:indeed.com OR site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma']
+            for sq in queries:
+                items=web_search(sq,20)
+                for j in parse_web_jobs(items,kind,remote):
+                    if j["id"] not in seen:seen.add(j["id"]);out.append(j)
+                time.sleep(.7)
     print(f"[Web Search] total={len(out)}",flush=True);return out
 
 def company_site(company):
@@ -282,7 +253,7 @@ def enrich(j):
         if local in ("info","contact"):s+=5
         if local in ("support","sales","admin"):s+=20
         return s
-    selected=sorted(es,key=score) # no email cap
+    selected=sorted(es,key=score)
     return {"id":j["id"],"sheet":j.get("sheet"),"company_site":site,"emails_rh":" / ".join(selected),
       "deep_status":"DONE" if pages else "SITE_FOUND_NO_PAGES","email_status":"FOUND" if selected else ("NO_EMAIL" if pages else "NOT_FOUND"),
       "email_source":"Company website / public web"}
@@ -311,8 +282,7 @@ def pending():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
     r=requests.get(WEBHOOK,params={"action":"pending","limit":5000,"sheet":"ALL"},allow_redirects=True,timeout=(10,90))
     try:
-        data=r.json()
-        jobs=data.get("jobs",[]) if isinstance(data,dict) else []
+        data=r.json();jobs=data.get("jobs",[]) if isinstance(data,dict) else []
         print(f"[Pending GET] received {len(jobs)} jobs",flush=True);return jobs
     except ValueError:
         print(f"[Pending GET] non-JSON status={r.status_code} body={(r.text or '')[:300]!r}",flush=True);return []
@@ -320,7 +290,7 @@ def pending():
 def deep():
     js=pending();print(f"[DEEP] pending={len(js)} (no artificial email-search cap)",flush=True);updates=[]
     for i,j in enumerate(js,1):
-        print(f"[DEEP] {i}/{len(js)} {j.get('entreprise')} — {j.get('intitule')} [{j.get('sheet')}]",flush=True)
+        print(f"[DEEP] {i}/{len(js)} {j.get('entreprise')} — {j.get('intitule')} [{j.get('sheet')}] ",flush=True)
         try:
             u=enrich(j);u["sheet"]=j.get("sheet");updates.append(u)
         except Exception as e:updates.append({"id":j.get("id"),"sheet":j.get("sheet"),"deep_status":"ERROR","email_status":"ERROR","deep_error":str(e)[:250]})
@@ -330,7 +300,7 @@ def deep():
 
 def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    print(f"[START] 23 keyword research families / {len(VARIANTS)} supporting keywords; 1 broad query per family and zone",flush=True)
+    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; 1 broad query per family and zone",flush=True)
     aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
     seen=set();totals={v:0 for v in aliases.values()}
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
