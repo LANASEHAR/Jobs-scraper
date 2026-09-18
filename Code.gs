@@ -1,5 +1,5 @@
 /** Jobs webhook: LinkedIn + Indeed + Casablanca + company/email enrichment. */
-const CONFIG={SPREADSHEET_ID:"1sCzxP9e_1gjKGBsN3tB_NUsSOnFacrfffuCzH45JuE8",SHEET_NAME:"Remote Jobs",CONTACTS_SHEET:"Morocco Contacts",MAX_DEEP_AGE_DAYS:30};
+const CONFIG={SPREADSHEET_ID:"1sCzxP9e_1gjKGBsN3tB_NUsSOnFacrfffuCzH45JuE8",SHEET_NAME:"WORLDWIDE_REMOTE",CONTACTS_SHEET:"Morocco Contacts",SHEETS:["WORLDWIDE_REMOTE","MOROCCO_REMOTE","CASABLANCA_ONSITE"],MAX_DEEP_AGE_DAYS:30};
 const COL={DATE:1,STATUS:2,ROLE:3,TITLE:4,COMPANY:5,LOCATION:6,REMOTE:7,SOURCE:8,LINK:9,ID:10,COMPANY_SITE:11,EMAILS:12,DEEP_STATUS:13,FIT_SCORE:14,FIT_REASONS:15,SALARY:16,DESCRIPTION:17,UPDATED:18,POSTED_AGE:19,POSTED_24H:20,SEARCH_TYPE:21,EMAIL_STATUS:22,EMAIL_SOURCE:23,SPONTANEOUS:24};
 const HEADERS=["Date Detection","Status","Role Cible","Intitulé","Entreprise","Lieu","Remote","Source","Lien","ID","Company Site","Emails RH","Deep Status","Fit Score","Fit Reasons","Salary","Description","Last Updated","Posted Age","Posted <=24h","Search Type","Email Status","Email Source","Spontaneous"];
 
@@ -24,14 +24,13 @@ function doPost(e){
 function doGet(e){
   try{const a=e.parameter.action||"";
     if(a==="contacts")return json_({status:"success",contacts:getContacts_().getDataRange().getValues()});
-    if(a==="pending")return getPending_(Math.min(Number(e.parameter.limit||200),500),e.parameter.sheet||CONFIG.SHEET_NAME);
+    if(a==="pending")return getPending_(Math.min(Number(e.parameter.limit||200),500),e.parameter.sheet||"ALL");
     return json_({status:"ok",service:"jobs-webhook"});
   }catch(err){return json_({status:"error",message:String(err)});}
 }
 function getPending_(limit,sheetName){
-  const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),out=[],max=Math.min(Number(limit)||200,500),cutoff=Date.now()-CONFIG.MAX_DEEP_AGE_DAYS*86400000;
-  for(let r=1;r<v.length&&out.length<max;r++){const row=v[r],deep=String(row[COL.DEEP_STATUS-1]||"").toUpperCase(),id=String(row[COL.ID-1]||"").trim();if(!id|| (deep&&deep!=="PENDING"&&deep!=="ERROR"))continue;const d=new Date(row[COL.DATE-1]).getTime();if(d&&d<cutoff)continue;out.push({id:id,entreprise:row[COL.COMPANY-1],intitule:row[COL.TITLE-1],lien:row[COL.LINK-1],company_site:row[COL.COMPANY_SITE-1],deep_status:deep});}
-  return json_({status:"success",jobs:out,sheet:sheetName});
+  const names=sheetName&&sheetName!=="ALL"?[sheetName]:CONFIG.SHEETS, out=[],max=Math.min(Number(limit)||200,500),cutoff=Date.now()-CONFIG.MAX_DEEP_AGE_DAYS*86400000;
+  for(const name of names){const sh=getSheet_(name),v=sh.getDataRange().getValues();for(let r=1;r<v.length&&out.length<max;r++){const row=v[r],deep=String(row[COL.DEEP_STATUS-1]||"").toUpperCase(),id=String(row[COL.ID-1]||"").trim();if(!id||(deep&&deep!=="PENDING"&&deep!=="ERROR"))continue;const d=new Date(row[COL.DATE-1]).getTime();if(d&&d<cutoff)continue;out.push({id:id,entreprise:row[COL.COMPANY-1],intitule:row[COL.TITLE-1],lien:row[COL.LINK-1],company_site:row[COL.COMPANY_SITE-1],deep_status:deep,sheet:name});}} return json_({status:"success",jobs:out});
 }
 function addJobs_(jobs,sheetName){
   const sh=getSheet_(sheetName),data=sh.getDataRange().getValues(),ids=new Set(data.slice(1).map(r=>String(r[COL.ID-1]||"").trim()).filter(Boolean)),rows=[];
@@ -43,9 +42,9 @@ function addJobs_(jobs,sheetName){
   return json_({status:"success",added:rows.length,received:jobs.length,sheet:sheetName});
 }
 function enrichJobs_(updates,sheetName){
-  const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),map=new Map();for(let r=1;r<v.length;r++){const id=String(v[r][COL.ID-1]||"").trim();if(id)map.set(id,r+1);}
-  let updated=0;
-  for(const u of updates){const row=map.get(String(u.id||"").trim());if(!row)continue;
+  const bySheet={};for(const u of updates){const n=u.sheet||sheetName||CONFIG.SHEET_NAME;(bySheet[n]||(bySheet[n]=[])).push(u);}let updated=0;
+  for(const n in bySheet){const sh=getSheet_(n),v=sh.getDataRange().getValues(),map=new Map();for(let r=1;r<v.length;r++){const id=String(v[r][COL.ID-1]||"").trim();if(id)map.set(id,r+1);}
+  for(const u of bySheet[n]){const row=map.get(String(u.id||"").trim());if(!row)continue;
     if(u.company_site!==undefined)sh.getRange(row,COL.COMPANY_SITE).setValue(u.company_site||"");
     if(u.emails_rh!==undefined)sh.getRange(row,COL.EMAILS).setValue(u.emails_rh||"");
     if(u.deep_status!==undefined)sh.getRange(row,COL.DEEP_STATUS).setValue(u.deep_status||"");
@@ -54,8 +53,8 @@ function enrichJobs_(updates,sheetName){
     if(u.spontaneous!==undefined)sh.getRange(row,COL.SPONTANEOUS).setValue(u.spontaneous||"NO");
     if(u.deep_error!==undefined)sh.getRange(row,COL.FIT_REASONS).setValue("Deep search error: "+u.deep_error);
     sh.getRange(row,COL.UPDATED).setValue(new Date());updated++;
-  }
-  return json_({status:"success",updated:updated,received:updates.length,sheet:sheetName});
+  }}
+  return json_({status:"success",updated:updated,received:updates.length});
 }
 function addContacts_(contacts){
   const sh=getContacts_(),v=sh.getDataRange().getValues(),seen=new Set(v.slice(1).map(r=>String(r[4]||"").toLowerCase().trim()).filter(Boolean)),rows=[];
@@ -63,4 +62,4 @@ function addContacts_(contacts){
   if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,7).setValues(rows);return json_({status:"success",added:rows.length,received:contacts.length,sheet:CONFIG.CONTACTS_SHEET});
 }
 function json_(obj){return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);}
-function setupRemoteSheet(){getSheet_(CONFIG.SHEET_NAME);}function setupMoroccoSheet(){getSheet_("Morocco Jobs");}function setupMoroccoContacts(){getContacts_();}
+function setupRemoteSheet(){CONFIG.SHEETS.forEach(getSheet_);}function setupMoroccoSheet(){getSheet_("MOROCCO_REMOTE");}function setupMoroccoContacts(){getContacts_();}
