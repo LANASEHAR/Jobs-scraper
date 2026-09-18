@@ -1,13 +1,66 @@
-/** Google Sheets webhook for job discovery and email-first Morocco contacts. */
+/** Jobs webhook: LinkedIn + Indeed + Casablanca + company/email enrichment. */
 const CONFIG={SPREADSHEET_ID:"1sCzxP9e_1gjKGBsN3tB_NUsSOnFacrfffuCzH45JuE8",SHEET_NAME:"Remote Jobs",CONTACTS_SHEET:"Morocco Contacts",MAX_DEEP_AGE_DAYS:30};
-const COL={DATE:1,STATUS:2,ROLE:3,TITLE:4,COMPANY:5,LOCATION:6,REMOTE:7,SOURCE:8,LINK:9,ID:10,COMPANY_SITE:11,EMAILS:12,DEEP_STATUS:13,FIT_SCORE:14,FIT_REASONS:15,SALARY:16,DESCRIPTION:17,UPDATED:18};
-function getSheet_(name){const ss=SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);const n=String(name||CONFIG.SHEET_NAME).trim()||CONFIG.SHEET_NAME;let sh=ss.getSheetByName(n);if(!sh){sh=ss.insertSheet(n);sh.getRange(1,1,1,18).setValues([["Date Detection","Status","Role Cible","Intitulé","Entreprise","Lieu","Remote","Source","Lien","ID","Company Site","Emails RH","Deep Status","Fit Score","Fit Reasons","Salary","Description","Last Updated"]]);sh.setFrozenRows(1);}return sh;}
-function getContacts_(){const ss=SpreadsheetApp.getActiveSpreadsheet();let sh=ss.getSheetByName(CONFIG.CONTACTS_SHEET);if(!sh){sh=ss.insertSheet(CONFIG.CONTACTS_SHEET);sh.getRange(1,1,1,7).setValues([["Date Found","Role","Company","Location","Email","Email Type","Company Website"]]);sh.setFrozenRows(1);}return sh;}
-function doPost(e){try{const b=JSON.parse((e.postData&&e.postData.contents)||"{}");if(b.mode==="contacts")return addContacts_(b.contacts||[]);const sheet=b.sheet||CONFIG.SHEET_NAME;if(b.mode==="jobs")return addJobs_(b.jobs||[],sheet);if(b.mode==="enrich")return enrichJobs_(b.updates||[],sheet);if(b.mode==="pending")return getPending_(b.limit||100,sheet);return json_({status:"error",message:"Unknown mode"});}catch(err){return json_({status:"error",message:String(err)});}}
-function doGet(e){try{if((e.parameter.action||"")==="contacts")return json_({status:"success",contacts:getContacts_().getDataRange().getValues()});if((e.parameter.action||"")!=="pending")return json_({status:"ok",service:"jobs-webhook"});return getPending_(Math.min(Number(e.parameter.limit||100),500),e.parameter.sheet||CONFIG.SHEET_NAME);}catch(err){return json_({status:"error",message:String(err)});}}
-function getPending_(limit,sheetName){const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),out=[],cutoff=Date.now()-CONFIG.MAX_DEEP_AGE_DAYS*86400000;for(let r=1;r<v.length&&out.length<Math.min(Number(limit)||100,500);r++){const row=v[r],deep=String(row[COL.DEEP_STATUS-1]||"").toUpperCase(),id=String(row[COL.ID-1]||"").trim();if(!id||(deep&&deep!=="PENDING"&&deep!=="ERROR"))continue;const d=new Date(row[COL.DATE-1]).getTime();if(d&&d<cutoff)continue;out.push({id:id,entreprise:row[COL.COMPANY-1],intitule:row[COL.TITLE-1],lien:row[COL.LINK-1],company_site:row[COL.COMPANY_SITE-1],deep_status:deep});}return json_({status:"success",jobs:out,sheet:sheetName});}
-function addJobs_(jobs,sheetName){const sh=getSheet_(sheetName),data=sh.getDataRange().getValues(),ids=new Set(data.slice(1).map(r=>String(r[COL.ID-1]||"").trim()).filter(Boolean)),rows=[];for(const j of jobs){const id=String(j.id||"").trim();if(!id||ids.has(id))continue;const title=String(j.intitule||j.role_cible||"").trim(),company=String(j.entreprise||"").trim();if(!title||!company)continue;rows.push([j.date_detection||new Date().toISOString(),"NEW",j.role_cible||title,title,company,j.lieu||"Morocco / Casablanca",j.remote===true?"YES":"NO",j.source||"LinkedIn",j.lien||"",id,j.company_site||"",j.emails_rh||"",j.deep_status||"PENDING",j.fit_score||"",j.fit_reasons||"",j.salary||"",j.description||"",new Date()]);ids.add(id);}if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,18).setValues(rows);return json_({status:"success",added:rows.length,received:jobs.length,sheet:sheetName});}
-function enrichJobs_(updates,sheetName){const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),map=new Map();for(let r=1;r<v.length;r++){const id=String(v[r][COL.ID-1]||"").trim();if(id)map.set(id,r+1);}let updated=0;for(const u of updates){const row=map.get(String(u.id||"").trim());if(!row)continue;if(u.company_site!==undefined)sh.getRange(row,COL.COMPANY_SITE).setValue(u.company_site||"");if(u.emails_rh!==undefined)sh.getRange(row,COL.EMAILS).setValue(u.emails_rh||"");if(u.deep_status!==undefined)sh.getRange(row,COL.DEEP_STATUS).setValue(u.deep_status||"");if(u.deep_error!==undefined)sh.getRange(row,COL.FIT_REASONS).setValue("Deep search error: "+u.deep_error);sh.getRange(row,COL.UPDATED).setValue(new Date());updated++;}return json_({status:"success",updated:updated,received:updates.length,sheet:sheetName});}
-function addContacts_(contacts){const sh=getContacts_(),v=sh.getDataRange().getValues(),seen=new Set(v.slice(1).map(r=>String(r[4]||"").toLowerCase().trim()).filter(Boolean)),rows=[];for(const c of contacts){const email=String(c.email||"").toLowerCase().trim();if(!email||seen.has(email)||!email.includes("@"))continue;rows.push([c.date_found||new Date().toISOString(),c.role||"",c.company||"",c.location||"",email,c.email_type||"Public company contact",c.company_website||""]);seen.add(email);}if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,7).setValues(rows);return json_({status:"success",added:rows.length,received:contacts.length,sheet:CONFIG.CONTACTS_SHEET});}
+const COL={DATE:1,STATUS:2,ROLE:3,TITLE:4,COMPANY:5,LOCATION:6,REMOTE:7,SOURCE:8,LINK:9,ID:10,COMPANY_SITE:11,EMAILS:12,DEEP_STATUS:13,FIT_SCORE:14,FIT_REASONS:15,SALARY:16,DESCRIPTION:17,UPDATED:18,POSTED_AGE:19,POSTED_24H:20,SEARCH_TYPE:21,EMAIL_STATUS:22,EMAIL_SOURCE:23,SPONTANEOUS:24};
+const HEADERS=["Date Detection","Status","Role Cible","Intitulé","Entreprise","Lieu","Remote","Source","Lien","ID","Company Site","Emails RH","Deep Status","Fit Score","Fit Reasons","Salary","Description","Last Updated","Posted Age","Posted <=24h","Search Type","Email Status","Email Source","Spontaneous"];
+
+function getSS_(){return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);}
+function getSheet_(name){
+  const ss=getSS_();const n=String(name||CONFIG.SHEET_NAME).trim()||CONFIG.SHEET_NAME;let sh=ss.getSheetByName(n);
+  if(!sh)sh=ss.insertSheet(n);
+  if(sh.getMaxColumns()<HEADERS.length)sh.insertColumnsAfter(sh.getMaxColumns(),HEADERS.length-sh.getMaxColumns());
+  sh.getRange(1,1,1,HEADERS.length).setValues([HEADERS]);sh.setFrozenRows(1);return sh;
+}
+function getContacts_(){const ss=getSS_();let sh=ss.getSheetByName(CONFIG.CONTACTS_SHEET);if(!sh)sh=ss.insertSheet(CONFIG.CONTACTS_SHEET);sh.getRange(1,1,1,7).setValues([["Date Found","Role","Company","Location","Email","Email Type","Company Website"]]);sh.setFrozenRows(1);return sh;}
+
+function doPost(e){
+  try{const b=JSON.parse((e.postData&&e.postData.contents)||"{}");
+    if(b.mode==="contacts")return addContacts_(b.contacts||[]);
+    if(b.mode==="jobs")return addJobs_(b.jobs||[],b.sheet||CONFIG.SHEET_NAME);
+    if(b.mode==="enrich")return enrichJobs_(b.updates||[],b.sheet||CONFIG.SHEET_NAME);
+    if(b.mode==="pending")return getPending_(b.limit||200,b.sheet||CONFIG.SHEET_NAME);
+    return json_({status:"error",message:"Unknown mode"});
+  }catch(err){return json_({status:"error",message:String(err)});}
+}
+function doGet(e){
+  try{const a=e.parameter.action||"";
+    if(a==="contacts")return json_({status:"success",contacts:getContacts_().getDataRange().getValues()});
+    if(a==="pending")return getPending_(Math.min(Number(e.parameter.limit||200),500),e.parameter.sheet||CONFIG.SHEET_NAME);
+    return json_({status:"ok",service:"jobs-webhook"});
+  }catch(err){return json_({status:"error",message:String(err)});}
+}
+function getPending_(limit,sheetName){
+  const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),out=[],max=Math.min(Number(limit)||200,500),cutoff=Date.now()-CONFIG.MAX_DEEP_AGE_DAYS*86400000;
+  for(let r=1;r<v.length&&out.length<max;r++){const row=v[r],deep=String(row[COL.DEEP_STATUS-1]||"").toUpperCase(),id=String(row[COL.ID-1]||"").trim();if(!id|| (deep&&deep!=="PENDING"&&deep!=="ERROR"))continue;const d=new Date(row[COL.DATE-1]).getTime();if(d&&d<cutoff)continue;out.push({id:id,entreprise:row[COL.COMPANY-1],intitule:row[COL.TITLE-1],lien:row[COL.LINK-1],company_site:row[COL.COMPANY_SITE-1],deep_status:deep});}
+  return json_({status:"success",jobs:out,sheet:sheetName});
+}
+function addJobs_(jobs,sheetName){
+  const sh=getSheet_(sheetName),data=sh.getDataRange().getValues(),ids=new Set(data.slice(1).map(r=>String(r[COL.ID-1]||"").trim()).filter(Boolean)),rows=[];
+  for(const j of jobs){const id=String(j.id||"").trim();if(!id||ids.has(id))continue;const title=String(j.intitule||j.role_cible||"").trim(),company=String(j.entreprise||"").trim();if(!title||!company)continue;
+    rows.push([j.date_detection||new Date().toISOString(),"NEW",j.role_cible||title,title,company,j.lieu||"Casablanca",j.remote===true?"YES":"NO",j.source||"",j.lien||"",id,j.company_site||"",j.emails_rh||"",j.deep_status||"PENDING",j.fit_score||"",j.fit_reasons||"",j.salary||"",j.description||"",new Date(),j.posted_age||"",j.posted_within_24h||"UNKNOWN",j.search_type||"",j.email_status||"PENDING",j.email_source||"",j.spontaneous||"NO"]);
+    ids.add(id);
+  }
+  if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,HEADERS.length).setValues(rows);
+  return json_({status:"success",added:rows.length,received:jobs.length,sheet:sheetName});
+}
+function enrichJobs_(updates,sheetName){
+  const sh=getSheet_(sheetName),v=sh.getDataRange().getValues(),map=new Map();for(let r=1;r<v.length;r++){const id=String(v[r][COL.ID-1]||"").trim();if(id)map.set(id,r+1);}
+  let updated=0;
+  for(const u of updates){const row=map.get(String(u.id||"").trim());if(!row)continue;
+    if(u.company_site!==undefined)sh.getRange(row,COL.COMPANY_SITE).setValue(u.company_site||"");
+    if(u.emails_rh!==undefined)sh.getRange(row,COL.EMAILS).setValue(u.emails_rh||"");
+    if(u.deep_status!==undefined)sh.getRange(row,COL.DEEP_STATUS).setValue(u.deep_status||"");
+    if(u.email_status!==undefined)sh.getRange(row,COL.EMAIL_STATUS).setValue(u.email_status||"");
+    if(u.email_source!==undefined)sh.getRange(row,COL.EMAIL_SOURCE).setValue(u.email_source||"");
+    if(u.spontaneous!==undefined)sh.getRange(row,COL.SPONTANEOUS).setValue(u.spontaneous||"NO");
+    if(u.deep_error!==undefined)sh.getRange(row,COL.FIT_REASONS).setValue("Deep search error: "+u.deep_error);
+    sh.getRange(row,COL.UPDATED).setValue(new Date());updated++;
+  }
+  return json_({status:"success",updated:updated,received:updates.length,sheet:sheetName});
+}
+function addContacts_(contacts){
+  const sh=getContacts_(),v=sh.getDataRange().getValues(),seen=new Set(v.slice(1).map(r=>String(r[4]||"").toLowerCase().trim()).filter(Boolean)),rows=[];
+  for(const c of contacts){const email=String(c.email||"").toLowerCase().trim();if(!email||seen.has(email)||!email.includes("@"))continue;rows.push([c.date_found||new Date().toISOString(),c.role||"",c.company||"",c.location||"",email,c.email_type||"Public company contact",c.company_website||""]);seen.add(email);}
+  if(rows.length)sh.getRange(sh.getLastRow()+1,1,rows.length,7).setValues(rows);return json_({status:"success",added:rows.length,received:contacts.length,sheet:CONFIG.CONTACTS_SHEET});
+}
 function json_(obj){return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);}
-function setupRemoteSheet(){getSheet_("Remote Jobs");}function setupMoroccoSheet(){getSheet_("Morocco Jobs");}function setupMoroccoContacts(){getContacts_();}
+function setupRemoteSheet(){getSheet_(CONFIG.SHEET_NAME);}function setupMoroccoSheet(){getSheet_("Morocco Jobs");}function setupMoroccoContacts(){getContacts_();}
