@@ -3,7 +3,8 @@ name: Jobs + Company Email Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 * * * *'
+    # Every 12 hours at minute 15 (UTC)
+    - cron: '15 0,12 * * *'
 
 permissions:
   contents: read
