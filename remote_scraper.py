@@ -8,31 +8,31 @@ from bs4 import BeautifulSoup
 WEBHOOK=os.getenv("GOOGLE_SHEET_WEBHOOK_URL","").strip()
 # Exactly 23 research families. Each family expands into multiple search variants.
 SEARCHES=[
- ("Customer Success",["Customer Success","Client Success","Customer Success Associate","Customer Success Specialist","Customer Success Partner","Customer Success Executive"]),
- ("Customer Support",["Customer Support","Customer Support Specialist","Customer Support Associate","Support Specialist","Customer Support Agent","Technical Support Customer"]),
- ("Customer Service",["Customer Service","Customer Service Specialist","Customer Service Associate","Customer Service Representative","Customer Care","Client Service"]),
- ("Customer Experience",["Customer Experience","Customer Experience Specialist","Customer Experience Associate","CX Specialist","Client Experience"]),
- ("Client Relations",["Client Relations","Client Relationship","Relationship Specialist","Client Services","Customer Relations"]),
- ("Account Management",["Account Manager","Account Management","Account Specialist","Client Account Manager","Customer Account Manager","Key Account"]),
- ("Account Executive",["Account Executive","Account Executive Morocco","Account Executive Casablanca","Sales Account Executive"]),
- ("Sales Executive",["Sales Executive","Sales Specialist","Sales Consultant","Commercial Executive","Commercial Specialist"]),
- ("Sales Representative",["Sales Representative","Sales Rep","Sales Specialist","Commercial Representative","Business Sales"]),
- ("SDR",["Sales Development Representative","SDR","Sales Development","Outbound Sales","Lead Generation Specialist"]),
- ("BDR",["Business Development Representative","BDR","Business Development","Business Development Specialist","Business Development Executive"]),
- ("Inside Sales",["Inside Sales","Inside Sales Representative","Inside Sales Specialist","Inside Sales Executive","Telesales"]),
- ("Business Development",["Business Development","Business Development Associate","Business Development Coordinator","Partnerships","Partnerships Specialist"]),
- ("Commercial",["Commercial","Commercial Specialist","Commercial Coordinator","Commercial Operations","Sales Commercial"]),
- ("Operations",["Operations","Operations Coordinator","Operations Specialist","Operations Associate","Operations Executive"]),
- ("Business Operations",["Business Operations","Business Operations Specialist","Business Operations Associate","Business Operations Coordinator"]),
- ("Sales Operations",["Sales Operations","Sales Operations Specialist","Sales Operations Coordinator","Revenue Operations","Sales Support"]),
- ("Administrative",["Administrative Coordinator","Administrative Assistant","Administration Specialist","Office Coordinator","Back Office"]),
- ("Project Coordination",["Project Coordinator","Project Assistant","Project Operations","Project Support","Project Administrator"]),
- ("E-commerce",["E-commerce","E-commerce Specialist","E-commerce Coordinator","E-commerce Executive","Marketplace Specialist"]),
- ("Shopify",["Shopify","Shopify Specialist","Shopify Coordinator","Shopify E-commerce","Shopify Customer Support"]),
- ("CRM",["CRM Specialist","CRM Coordinator","CRM Administrator","CRM Operations","Customer Relationship Management"]),
- ("Designer",["Designer","Graphic Designer","Digital Designer","Web Designer","Product Designer","Visual Designer","UI Designer","UX Designer","UI/UX Designer"])
+ ("Customer Success",["customer success","client success","customer retention","customer onboarding"]),
+ ("Customer Support",["customer support","customer service","customer care","technical support"]),
+ ("Customer Experience",["customer experience","client experience","CX","customer relations"]),
+ ("Account Management",["account management","account manager","client account","key account"]),
+ ("Account Executive",["account executive","account sales","sales account"]),
+ ("Sales",["sales","selling","commercial","revenue"]),
+ ("Business Development",["business development","business growth","partnerships","BD"]),
+ ("SDR",["sales development","lead generation","outbound sales","SDR"]),
+ ("BDR",["business development","business development representative","BDR"]),
+ ("Inside Sales",["inside sales","telesales","phone sales","outbound"]),
+ ("Commercial",["commercial","business development","sales operations"]),
+ ("Operations",["operations","business operations","process operations"]),
+ ("Sales Operations",["sales operations","revenue operations","sales support","CRM operations"]),
+ ("Administrative",["administration","administrative","office operations","back office"]),
+ ("Project Coordination",["project coordination","project support","project operations"]),
+ ("E-commerce",["e-commerce","ecommerce","online store","marketplace"]),
+ ("Shopify",["shopify","shopify store","shopify ecommerce"]),
+ ("CRM",["CRM","customer relationship","CRM operations","customer database"]),
+ ("Design",["designer","design","graphic design","digital design","visual design"]),
+ ("Customer Relations",["client relations","customer relations","client services"]),
+ ("Client Services",["client services","client management","customer services"]),
+ ("Marketplace",["marketplace","online marketplace","e-commerce marketplace"]),
+ ("Remote Commercial",["remote sales","remote customer success","remote support","remote operations"])
 ]
-VARIANTS=[v for _,vs in SEARCHES for v in vs]
+VARIANTS=[v for _,vs in SEARCHES for v in vs]\nKEYWORD_QUERIES=[" OR ".join(vs) for _,vs in SEARCHES]
 EXCLUDE=["director","vice president","vp ","head of ","chief","architect","doctor","nurse","software engineer","developer","data scientist","machine learning","devops","lawyer","accountant","physician","warehouse worker","driver","internship","intern "]
 UA=["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36","Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36"]
 S=requests.Session()
@@ -179,15 +179,14 @@ def linkedin_web_fallback(keywords,location,remote,search_type):
 def linkedin():
     targets=[("WORLDWIDE_REMOTE","Remote / Worldwide",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca, Morocco",False)]
     all_out=[];seen=set()
-    for family,variants in SEARCHES:
-        for q in variants:
-            for st,loc,remote in targets:
-                print(f"[LinkedIn] {family} :: {q} | {st}",flush=True)
-                found=linkedin_guest_search(q,loc,remote,st)
-                if len(found)<5:found+=linkedin_web_fallback(q,loc,remote,st)
-                for j in found:
-                    if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
-                time.sleep(1.5)
+    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
+        for st,loc,remote in targets:
+            print(f"[LinkedIn] {family} :: keywords={keyword_query} | {st}",flush=True)
+            found=linkedin_guest_search(keyword_query,loc,remote,st)
+            if len(found)<5:found+=linkedin_web_fallback(keyword_query,loc,remote,st)
+            for j in found:
+                if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
+            time.sleep(1.5)
     print(f"[LinkedIn] total={len(all_out)}",flush=True);return all_out
 
 def parse_indeed(html,kind,remote):
@@ -206,15 +205,14 @@ def parse_indeed(html,kind,remote):
 
 def indeed():
     out=[];seen=set();targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
-    for family,variants in SEARCHES:
-        for q in variants:
-            for kind,loc,remote in targets:
-                print(f"[Indeed] {family} :: {q} | {kind}",flush=True)
-                h=fetch(f"https://ma.indeed.com/jobs?q={quote_plus(q)}&l={quote_plus(loc)}&fromage=1",15,0)
-                if h:
-                    for j in parse_indeed(h,kind,remote):
-                        if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-                time.sleep(1.2+random.random())
+    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
+        for kind,loc,remote in targets:
+            print(f"[Indeed] {family} :: keywords={keyword_query} | {kind}",flush=True)
+            h=fetch(f"https://ma.indeed.com/jobs?q={quote_plus(keyword_query)}&l={quote_plus(loc)}&fromage=1",15,0)
+            if h:
+                for j in parse_indeed(h,kind,remote):
+                    if j["id"] not in seen:seen.add(j["id"]);out.append(j)
+            time.sleep(1.2+random.random())
     print(f"[Indeed] total={len(out)}",flush=True);return out
 
 JOB_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com"]
@@ -235,14 +233,12 @@ def parse_web_jobs(items,kind,remote):
 
 def public_web_jobs():
     out=[];seen=set()
-    for family,variants in SEARCHES:
-        for q in variants:
-            for kind,place,remote in [("WORLDWIDE_REMOTE","remote worldwide",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
+    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
+        for kind,place,remote in [("WORLDWIDE_REMOTE","remote worldwide",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
                 queries=[
-                  f'"{q}" {place} jobs last 24 hours',
-                  f'"{q}" {place} emploi recrutement',
-                  f'"{q}" {place} site:indeed.com OR site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma',
-                  f'"{q}" {place} careers jobs'
+                  f'({keyword_query}) {place} jobs last 24 hours',
+                  f'({keyword_query}) {place} emploi recrutement',
+                  f'({keyword_query}) {place} site:indeed.com OR site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma'
                 ]
                 for sq in queries:
                     items=web_search(sq,20)
@@ -334,7 +330,7 @@ def deep():
 
 def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    print(f"[START] 23 research families / {len(VARIANTS)} title variants; no result cap per source",flush=True)
+    print(f"[START] 23 keyword research families / {len(VARIANTS)} supporting keywords; 1 broad query per family and zone",flush=True)
     aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
     seen=set();totals={v:0 for v in aliases.values()}
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
