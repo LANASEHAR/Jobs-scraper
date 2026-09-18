@@ -115,31 +115,49 @@ def linkedin_guest_search(keywords,location,remote,search_type):
     return out
 
 def web_search(q,limit=10):
-    # DDG 202 is handled by falling through to its lite endpoint and Bing/Google HTML.
+    """Fast resilient public search. Avoids waiting through dead providers on every query."""
     providers=[
-      "https://html.duckduckgo.com/html/?q="+quote_plus(q),
-      "https://lite.duckduckgo.com/lite/?q="+quote_plus(q),
-      "https://www.bing.com/search?q="+quote_plus(q),
-      "https://www.google.com/search?q="+quote_plus(q)
+      ("Bing","https://www.bing.com/search?q="+quote_plus(q),7),
+      ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q),7),
+      ("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q),7),
+      ("Google","https://www.google.com/search?q="+quote_plus(q),7)
     ]
-    for u in providers:
+    for name,u,timeout in providers:
+        if name.startswith("DDG") and DDG_DISABLED: continue
         try:
-            r=S.get(u,headers=hdr(),timeout=15,allow_redirects=True)
+            r=S.get(u,headers=hdr(),timeout=timeout,allow_redirects=True)
             if r.status_code!=200 or not r.text:
-                print(f"[SEARCH] {r.status_code} {u.split('?')[0]}",flush=True);continue
+                print(f"[SEARCH] {name} status={r.status_code}",flush=True)
+                if name.startswith("DDG"): register_ddg_failure()
+                continue
             soup=BeautifulSoup(r.text,"html.parser");items=[]
-            sels=["a.result__a","a.result-link","li.b_algo h2 a","a[href*='/url?q=']"]
-            for sel in sels:
+            for sel in ["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]:
                 for a in soup.select(sel):
                     href=a.get("href","");title=clean(a.get_text(" ",strip=True))
-                    if href.startswith("/url?q="):href=href.split("/url?q=",1)[1].split("&",1)[0]
-                    if href.startswith("http") and title:items.append((title,href))
-                if items:break
-            if items:return items[:limit]
-        except requests.RequestException as e:print(f"[SEARCH] error {e}",flush=True)
-        time.sleep(1)
+                    if href.startswith("/url?q="): href=href.split("/url?q=",1)[1].split("&",1)[0]
+                    if href.startswith("http") and title: items.append((title,href))
+                if items: break
+            if items:
+                if name.startswith("DDG"): reset_ddg_failures()
+                return items[:limit]
+            if name.startswith("DDG"): register_ddg_failure()
+        except requests.RequestException as e:
+            print(f"[SEARCH] {name} error: {type(e).__name__}",flush=True)
+            if name.startswith("DDG"): register_ddg_failure()
     return []
 
+DDG_FAILURES=0
+DDG_DISABLED=False
+def register_ddg_failure():
+    global DDG_FAILURES,DDG_DISABLED
+    DDG_FAILURES+=1
+    if DDG_FAILURES>=2:
+        DDG_DISABLED=True
+        print("[SEARCH] DDG circuit breaker ON for this run.",flush=True)
+def reset_ddg_failures():
+    global DDG_FAILURES,DDG_DISABLED
+    DDG_FAILURES=0
+    DDG_DISABLED=False
 def company_from_linkedin_url(url):
     m=re.search(r"-at-([^-]+(?:-[^-]+){0,8})-(\d{6,})/?$",url)
     return clean(m.group(1).replace("-"," ")).title() if m else ""
