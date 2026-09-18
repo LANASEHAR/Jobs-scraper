@@ -23,14 +23,14 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Discover fresh jobs and spontaneous company opportunities
         env:
-          GOOGLE_SHEET_WEBHOOK_URL: \${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
         run: python remote_scraper.py --mode scrape
 
   enrich:
     name: Find company websites + public recruiting emails
     needs: discover
-    if: \${{ needs.discover.result == 'success' }}
+    if: ${{ needs.discover.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -43,7 +43,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Deep search every pending company
         env:
-          GOOGLE_SHEET_WEBHOOK_URL: \${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           DEEP_LIMIT: '200'
           PYTHONUNBUFFERED: '1'
         run: python remote_scraper.py --mode deep
