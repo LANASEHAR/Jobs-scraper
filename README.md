@@ -1,68 +1,44 @@
-# Remote Jobs Scraper — Worldwide
+# Jobs Scraper — LinkedIn + Indeed + Casablanca + Company Emails
 
-A separate job-hunting pipeline for Safae/Halima's remote career search.
+Goal: turn every relevant job into a company contact opportunity.
 
-## Goal
+Pipeline:
+LinkedIn / Indeed / direct Casablanca company search
+-> fresh job/company record
+-> immediate Google Sheet write
+-> official company website
+-> Careers / Jobs / Recruitment / HR / Contact
+-> public professional email
+-> update the SAME Sheet row.
 
-Find worldwide remote roles from LinkedIn that fit the current profile: Customer Success, Account Management, Sales/Business Development, Customer Support, Operations, Administration, E-commerce/Shopify, CRM/Back Office and junior UX/UI.
+Sources:
+- LinkedIn: Remote worldwide + Casablanca, target freshness last 24h.
+- Indeed: Remote + Casablanca, target freshness last 24h.
+- Direct company search: Casablanca career/recruitment pages, including spontaneous opportunities.
 
-## Architecture
+Every LinkedIn or Indeed offer triggers company research. The offer is not considered complete until the deep-search stage has attempted to find the company website and public professional email.
 
-1. **LinkedIn discovery** — searches remote LinkedIn job pages using multiple target-role queries.
-2. **Immediate Sheet write** — discovered jobs are sent to Google Sheets immediately; no deep search blocks discovery.
-3. **Deep search** — a separate run reads pending rows, finds the company's official website and checks contact/career pages.
-4. **Enrichment** — company site, public email(s), and deep-search status are written back to the same row using the stable job ID.
-5. **Deduplication** — stable IDs prevent the same LinkedIn offer from being inserted twice.
+Email priority:
+careers@, recruitment@, recrutement@, jobs@, hiring@, talent@, hr@, then other public company-domain emails.
 
-## Important behavior
+No invented emails. No CAPTCHA, authentication or anti-bot bypass.
 
-- Remote-first and worldwide; Morocco is the candidate base.
-- No LinkedIn login, CAPTCHA bypass, or anti-bot bypass.
-- No invented company websites or emails.
-- If LinkedIn is temporarily unavailable, the run logs the failure and continues.
-- Deep search is intentionally separated so a slow company lookup cannot delay initial job capture.
-- The Google Sheet is the source of truth for the application pipeline.
+Google Sheet columns:
+Date Detection | Status | Role Cible | Intitulé | Entreprise | Lieu | Remote | Source | Lien | ID | Company Site | Emails RH | Deep Status | Fit Score | Fit Reasons | Salary | Description | Last Updated | Posted Age | Posted <=24h | Search Type | Email Status | Email Source | Spontaneous
 
-## Google Sheet
+Useful filters:
+Email Status = FOUND
+Search Type = REMOTE
+Search Type = CASABLANCA
+Search Type = SPONTANEOUS_CASABLANCA
+Posted <=24h = YES
 
-The Apps Script creates a `Remote Jobs` tab automatically with:
+Setup:
+1. Paste Code.gs into Apps Script.
+2. Run setupRemoteSheet() once.
+3. Deploy as Web App, execute as Me, access Anyone.
+4. Store the /exec URL in GitHub Actions secret GOOGLE_SHEET_WEBHOOK_URL.
 
-`Date Detection | Status | Role Cible | Intitulé | Entreprise | Lieu | Remote | Source | Lien | ID | Company Site | Emails RH | Deep Status | Fit Score | Fit Reasons | Salary | Description | Last Updated`
+The scraper runs hourly. Discovery writes to the Sheet before deep research so slow company lookups do not prevent offers from being captured.
 
-## Setup
-
-### 1. Google Apps Script
-
-Create a Google Apps Script bound to the target Google Sheet, paste `Code.gs`, run `setupRemoteSheet()` once, then deploy it as a Web App:
-
-- Execute as: **Me**
-- Who has access: **Anyone**
-
-Copy the `/exec` URL.
-
-### 2. GitHub secret
-
-Repository → Settings → Secrets and variables → Actions → New repository secret:
-
-`GOOGLE_SHEET_WEBHOOK_URL` = your Apps Script `/exec` URL.
-
-Never commit that URL or other secrets to source code.
-
-### 3. Run
-
-GitHub Actions → **Remote Jobs Scraper** → Run workflow.
-
-The workflow also runs hourly. Discovery and deep search are independent jobs, so the expensive enrichment phase does not block initial capture.
-
-## Local commands
-
-```bash
-python remote_scraper.py --mode scrape
-python remote_scraper.py --mode deep
-```
-
-## Expected workflow
-
-**LinkedIn → Sheet immediately → Deep Search → Company Site/Email update**
-
-This keeps the discovery pipeline fast and makes the research phase independently retryable.
+Public job scrapers commonly need source-specific fallbacks because job boards can block automated requests or change their HTML. This implementation therefore continues when a source is unavailable rather than stopping the whole pipeline.
