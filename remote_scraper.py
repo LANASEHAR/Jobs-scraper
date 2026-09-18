@@ -88,4 +88,17 @@ def linkedin():
             for j in found:
                 if j["id"] not in seen:seen.add(j["id"]);out.append(j)
     return out
+def indeed():
+    out=[];seen=set()
+    targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
+    for q in ROLES:
+        for kind,loc,remote in targets:
+            u=f"https://ma.indeed.com/jobs?q={quote_plus(q)}&l={quote_plus(loc)}&fromage=1"
+            h=fetch(u,15,2)
+            if not h:continue
+            for j in parse_indeed(h,kind):
+                j["remote"]=remote;j["search_type"]=kind
+                if j["id"] not in seen:seen.add(j["id"]);out.append(j)
+    return out
+
 
