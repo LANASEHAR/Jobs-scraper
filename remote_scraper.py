@@ -1,4 +1,8 @@
-"""High-coverage job discovery: LinkedIn + Indeed + public web + company sites."""
+"""High-coverage job discovery for exactly six target role families.
+
+The scraper is deliberately resilient: provider blocks (403/429), search-engine
+failures, or an enrichment failure must not masquerade as a successful empty run.
+"""
 import argparse, hashlib, os, random, re, time
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -14,33 +18,45 @@ SEARCHES=[
  ("Administrative",["administration","administrative","office operations","back office"]),
  ("Design",["designer","design","graphic design","digital design","visual design"])
 ]
+# Keep exactly six role families. Expand query variants inside those families only.
 VARIANTS=[v for _,vs in SEARCHES for v in vs]
-KEYWORD_QUERIES=[" OR ".join(vs) for _,vs in SEARCHES]
 EXCLUDE=["director","vice president","vp ","head of ","chief","architect","doctor","nurse","software engineer","developer","data scientist","machine learning","devops","lawyer","accountant","physician","warehouse worker","driver","internship","intern "]
-UA=["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36","Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36"]
+UA=[
+ "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
+ "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36"
+]
 S=requests.Session()
 EMAIL_RE=re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 BAD={"example.com","sentry.io","schema.org","google.com","facebook.com","linkedin.com"}
 BLOCKED={"linkedin.com","facebook.com","instagram.com","twitter.com","x.com","indeed.com","glassdoor.com","crunchbase.com","wikipedia.org","duckduckgo.com","google.com","bing.com","youtube.com"}
 PATHS=["","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us","/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers","/fr/contact"]
+SEARCH_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com"]
+SOURCE_STATS={}
 
 def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def clean(x): return re.sub(r"\s+", " ", str(x or "")).strip()
 def hdr(): return {"User-Agent":random.choice(UA),"Accept-Language":"en-US,en;q=0.9,fr;q=0.8","Accept":"text/html,application/xhtml+xml"}
-def fetch(url,timeout=15,retries=0):
+def stat(source,key,n=1): SOURCE_STATS.setdefault(source,{}); SOURCE_STATS[source][key]=SOURCE_STATS[source].get(key,0)+n
+
+def fetch(url,timeout=15,retries=2):
     for i in range(retries+1):
         try:
             r=S.get(url,headers=hdr(),timeout=timeout,allow_redirects=True)
-            if r.status_code==200 and r.text:return r.text
+            if r.status_code==200 and r.text:
+                return r.text
+            stat("HTTP",str(r.status_code))
             print(f"[HTTP] {r.status_code} {url}",flush=True)
-            if r.status_code==429:return None
-        except requests.RequestException as e: print(f"[HTTP] error {url}: {e}",flush=True)
-        if i<retries:time.sleep(2+i*2)
+            if r.status_code in (401,403,429):
+                return None
+        except requests.RequestException as e:
+            print(f"[HTTP] error {url}: {type(e).__name__}",flush=True)
+            stat("HTTP","exception")
+        if i<retries: time.sleep(min(8,2**i+random.random()))
     return None
 
 def age_hours(t):
     t=clean(t).lower()
-    if any(x in t for x in ["just posted","today","il y a quelques","il y a 1 heure","new"]):return 0
+    if any(x in t for x in ["just posted","today","il y a quelques","il y a 1 heure","new"]): return 0
     m=re.search(r"(\d+)\s*(?:hours?|heures?)\b",t)
     if m:return int(m.group(1))
     m=re.search(r"(\d+)\s*(?:minutes?|mins?)\b",t)
@@ -48,19 +64,25 @@ def age_hours(t):
     m=re.search(r"(\d+)\s*(?:days?|jours?)\b",t)
     if m:return int(m.group(1))*24
     return None
-def fresh(t):
-    h=age_hours(t);return h is not None and h<=24
+
+def fresh_window(t,max_hours=168):
+    h=age_hours(t)
+    return h is not None and h<=max_hours
+
 def target(t,d=""):
     x=(t+" "+d).lower()
     return not any(v in x for v in EXCLUDE)
+
 def jid(source,url,title):
     key=url.split("?")[0].rstrip("/") if url else source+"|"+title
     return "job_"+hashlib.sha256(key.encode()).hexdigest()[:18]
+
 def job(title,company,loc,remote,source,url,age="",desc="",kind=None):
     return {"id":jid(source,url,title),"date_detection":now(),"statut":"NEW","role_cible":title,"intitule":title,
       "entreprise":company or "Unknown","lieu":loc or ("Remote / Worldwide" if remote else "Casablanca"),"remote":bool(remote),
       "source":source,"lien":url,"company_site":"","emails_rh":"","deep_status":"PENDING","fit_score":"","fit_reasons":"",
-      "salary":"","description":clean(desc),"posted_age":clean(age),"posted_within_24h":"YES" if fresh(age) else "UNKNOWN",
+      "salary":"","description":clean(desc),"posted_age":clean(age),
+      "posted_within_24h":"YES" if fresh_window(age,24) else "UNKNOWN",
       "search_type":kind or ("REMOTE" if remote else "CASABLANCA"),"email_status":"PENDING","email_source":"","spontaneous":"NO"}
 
 def parse_linkedin(html,remote,search_type):
@@ -76,24 +98,28 @@ def parse_linkedin(html,remote,search_type):
         te=card.select_one("time,.job-search-card__listdate,.job-search-card__listdate--new")
         company=clean(ce.get_text(" ",strip=True) if ce else "");loc=clean(le.get_text(" ",strip=True) if le else "")
         age=clean(te.get_text(" ",strip=True) if te else "")
-        if title and company and target(title) and (fresh(age) or not age):
+        if title and company and target(title) and (fresh_window(age,168) or not age):
             out.append(job(title,company,loc,remote,"LinkedIn",urljoin("https://www.linkedin.com",href),age,kind=search_type))
     return out
 
 def linkedin_guest_search(keywords,location,remote,search_type):
-    out=[];start=0
-    while True:
-        params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r86400&start={start}"
+    out=[];start=0;blocked=0
+    while start<=75:
+        params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start={start}"
         if remote:params+="&f_WT=2"
-        h=fetch("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params,20,0)
-        if not h:break
+        h=fetch("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params,20,1)
+        if not h:
+            blocked+=1
+            if blocked>=2: break
+            start+=25; continue
+        blocked=0
         found=parse_linkedin(h,remote,search_type)
         if not found:break
         out.extend(found)
         print(f"[LinkedIn page] {keywords} | {search_type} start={start} found={len(found)}",flush=True)
-        if len(found)<20:break
+        if len(found)<10:break
         start+=25
-        time.sleep(2.5+random.random()*2)
+        time.sleep(3.5+random.random()*3)
     return out
 
 DDG_FAILURES=0
@@ -101,25 +127,31 @@ DDG_DISABLED=False
 def register_ddg_failure():
     global DDG_FAILURES,DDG_DISABLED
     DDG_FAILURES+=1
-    if DDG_FAILURES>=2:
-        DDG_DISABLED=True
-        print("[SEARCH] DDG circuit breaker ON for this run.",flush=True)
+    if DDG_FAILURES>=2: DDG_DISABLED=True
 def reset_ddg_failures():
     global DDG_FAILURES,DDG_DISABLED
     DDG_FAILURES=0;DDG_DISABLED=False
 
 def web_search(q,limit=10):
-    providers=[("Bing","https://www.bing.com/search?q="+quote_plus(q),7),("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q),7),("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q),7),("Google","https://www.google.com/search?q="+quote_plus(q),7)]
+    # Search several independent public result pages. A provider failure is never
+    # interpreted as "no results".
+    providers=[
+      ("Bing","https://www.bing.com/search?q="+quote_plus(q),8),
+      ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q),8),
+      ("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q),8),
+      ("Google","https://www.google.com/search?q="+quote_plus(q),8)
+    ]
     for name,u,timeout in providers:
-        if name.startswith("DDG") and DDG_DISABLED:continue
+        if name.startswith("DDG") and DDG_DISABLED: continue
         try:
             r=S.get(u,headers=hdr(),timeout=timeout,allow_redirects=True)
             if r.status_code!=200 or not r.text:
-                print(f"[SEARCH] {name} status={r.status_code}",flush=True)
+                stat("Search",f"{name}_{r.status_code}");print(f"[SEARCH] {name} status={r.status_code}",flush=True)
                 if name.startswith("DDG"):register_ddg_failure()
                 continue
             soup=BeautifulSoup(r.text,"html.parser");items=[]
-            for sel in ["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]:
+            selectors=["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]
+            for sel in selectors:
                 for a in soup.select(sel):
                     href=a.get("href","");title=clean(a.get_text(" ",strip=True))
                     if href.startswith("/url?q="):href=href.split("/url?q=",1)[1].split("&",1)[0]
@@ -127,11 +159,11 @@ def web_search(q,limit=10):
                 if items:break
             if items:
                 if name.startswith("DDG"):reset_ddg_failures()
+                stat("Search",name)
                 return items[:limit]
             if name.startswith("DDG"):register_ddg_failure()
-        except requests.RequestException as e:
-            print(f"[SEARCH] {name} error: {type(e).__name__}",flush=True)
-            if name.startswith("DDG"):register_ddg_failure()
+        except requests.RequestException:
+            stat("Search",f"{name}_exception")
     return []
 
 def company_from_linkedin_url(url):
@@ -154,14 +186,19 @@ def linkedin_web_fallback(keywords,location,remote,search_type):
 def linkedin():
     targets=[("WORLDWIDE_REMOTE","Remote / Worldwide",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca, Morocco",False)]
     all_out=[];seen=set()
-    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
-        for st,loc,remote in targets:
-            print(f"[LinkedIn] {family} :: keywords={keyword_query} | {st}",flush=True)
-            found=linkedin_guest_search(keyword_query,loc,remote,st)
-            if len(found)<5:found+=linkedin_web_fallback(keyword_query,loc,remote,st)
-            for j in found:
-                if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
-            time.sleep(1.5)
+    for family,variants in SEARCHES:
+        keyword_queries=[
+          f'"{variants[0]}"',
+          f'"{variants[0]}" OR "{variants[1]}"' if len(variants)>1 else f'"{variants[0]}"'
+        ]
+        for keyword_query in keyword_queries:
+            for st,loc,remote in targets:
+                print(f"[LinkedIn] {family} :: keywords={keyword_query} | {st}",flush=True)
+                found=linkedin_guest_search(keyword_query,loc,remote,st)
+                if len(found)<3:found+=linkedin_web_fallback(keyword_query,loc,remote,st)
+                for j in found:
+                    if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
+                time.sleep(2+random.random())
     print(f"[LinkedIn] total={len(all_out)}",flush=True);return all_out
 
 def parse_indeed(html,kind,remote):
@@ -174,28 +211,46 @@ def parse_indeed(html,kind,remote):
         de=card.select_one("span.date,[data-testid='myJobsStateDate']");se=card.select_one(".job-snippet")
         age=clean(de.get_text(" ",strip=True) if de else "");desc=clean(se.get_text(" ",strip=True) if se else "");company=clean(ce.get_text(" ",strip=True) if ce else "")
         if not title or not company or not target(title,desc) or url in seen:continue
-        if age and not fresh(age):continue
+        if age and not fresh_window(age,168):continue
         seen.add(url);out.append(job(title,company,clean(le.get_text(" ",strip=True) if le else ""),remote,"Indeed",url,age,desc,kind))
     return out
 
 def indeed():
+    # Direct Indeed HTML is frequently protected by 403. Try it once per query,
+    # then immediately use public indexed search instead of wasting the run.
     out=[];seen=set();targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
-    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
+    for family,variants in SEARCHES:
         for kind,loc,remote in targets:
-            print(f"[Indeed] {family} :: keywords={keyword_query} | {kind}",flush=True)
-            h=fetch(f"https://ma.indeed.com/jobs?q={quote_plus(keyword_query)}&l={quote_plus(loc)}&fromage=1",15,0)
+            keyword=variants[0]
+            url=f"https://ma.indeed.com/jobs?q={quote_plus(keyword)}&l={quote_plus(loc)}&fromage=7"
+            h=fetch(url,15,0)
             if h:
-                for j in parse_indeed(h,kind,remote):
-                    if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-            time.sleep(1.2+random.random())
+                found=parse_indeed(h,kind,remote)
+            else:
+                found=[]
+            if not found:
+                queries=[
+                  f'site:indeed.com/viewjob "{keyword}" "{loc}"',
+                  f'site:indeed.com/jobs "{keyword}" "{loc}"',
+                  f'site:ma.indeed.com "{keyword}" "{loc}"'
+                ]
+                for q in queries:
+                    for title,u in web_search(q,20):
+                        if "indeed.com" not in urlparse(u).netloc.lower():continue
+                        if not target(title):continue
+                        found.append(job(title.split(" | ")[0],clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer",
+                                         loc,remote,"Indeed Search",u,"","","",kind))
+            for j in found:
+                if j["id"] not in seen:seen.add(j["id"]);out.append(j)
+            time.sleep(1.5+random.random())
     print(f"[Indeed] total={len(out)}",flush=True);return out
 
-JOB_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com"]
 def parse_web_jobs(items,kind,remote):
     out=[]
+    domains=set(SEARCH_DOMAINS)
     for title,url in items:
         host=urlparse(url).netloc.lower().replace("www.","")
-        if not any(host==d or host.endswith("."+d) for d in JOB_DOMAINS):continue
+        if not any(host==d or host.endswith("."+d) for d in domains):continue
         low=title.lower()
         if not any(x in low for x in [v.lower() for v in VARIANTS]):continue
         if not target(title):continue
@@ -208,19 +263,27 @@ def parse_web_jobs(items,kind,remote):
 
 def public_web_jobs():
     out=[];seen=set()
-    for (family,variants),keyword_query in zip(SEARCHES,KEYWORD_QUERIES):
-        for kind,place,remote in [("WORLDWIDE_REMOTE","remote worldwide",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
-            queries=[f'({keyword_query}) {place} jobs last 24 hours',f'({keyword_query}) {place} emploi recrutement',f'({keyword_query}) {place} site:indeed.com OR site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma']
-            for sq in queries:
-                items=web_search(sq,20)
-                for j in parse_web_jobs(items,kind,remote):
-                    if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-                time.sleep(.7)
+    for family,variants in SEARCHES:
+        # Small precise queries outperform one giant OR expression on public search engines.
+        seeds=[variants[0],variants[1] if len(variants)>1 else variants[0]]
+        for seed in seeds:
+            for kind,place,remote in [("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
+                queries=[
+                  f'"{seed}" {place} jobs',
+                  f'"{seed}" {place} hiring',
+                  f'"{seed}" {place} recrutement',
+                  f'"{seed}" {place} site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma'
+                ]
+                for sq in queries:
+                    items=web_search(sq,20)
+                    for j in parse_web_jobs(items,kind,remote):
+                        if j["id"] not in seen:seen.add(j["id"]);out.append(j)
+                    time.sleep(.5+random.random()*.5)
     print(f"[Web Search] total={len(out)}",flush=True);return out
 
 def company_site(company):
     if not company or company=="Unknown":return None
-    for q in [f'"{company}" official website',f'"{company}" careers jobs',f'"{company}" recruitment Casablanca']:
+    for q in [f'"{company}" official website',f'"{company}" careers jobs',f'"{company}" recruitment']:
         for _,u in web_search(q,10):
             host=urlparse(u).netloc.lower().replace("www.","")
             if host and not any(host==b or host.endswith("."+b) for b in BLOCKED):return "https://"+host
@@ -238,13 +301,13 @@ def enrich(j):
     if not site:return {"id":j["id"],"sheet":j.get("sheet"),"company_site":"","emails_rh":"","deep_status":"NO_SITE","email_status":"NOT_FOUND","email_source":""}
     p=urlparse(site);base=f"{p.scheme}://{p.netloc}";domain=p.netloc.lower().replace("www.","");es=set();pages=False
     for path in PATHS:
-        h=fetch(base+path,10,0)
+        h=fetch(base+path,10,1)
         if h:pages=True;es|=extract_emails(h)
-    for q in [f'"{j.get("entreprise","")}" recruitment email',f'"{j.get("entreprise","")}" careers email',f'"{j.get("entreprise","")}" recrutement email',f'"{j.get("entreprise","")}" contact email']:
+    for q in [f'"{j.get("entreprise","")}" recruitment email',f'"{j.get("entreprise","")}" careers email',f'"{j.get("entreprise","")}" recrutement email']:
         for _,u in web_search(q,10):
             host=urlparse(u).netloc.lower().replace("www.","")
             if host==domain or host.endswith("."+domain):
-                h=fetch(u,10,0)
+                h=fetch(u,10,1)
                 if h:pages=True;es|=extract_emails(h)
     def score(e):
         local,dom=e.split("@",1);s=0
@@ -258,61 +321,82 @@ def enrich(j):
       "deep_status":"DONE" if pages else "SITE_FOUND_NO_PAGES","email_status":"FOUND" if selected else ("NO_EMAIL" if pages else "NOT_FOUND"),
       "email_source":"Company website / public web"}
 
-def post(payload):
+def post(payload,expected_status="success"):
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    for i in range(3):
+    last_error=""
+    for i in range(4):
         try:
-            r=requests.post(WEBHOOK,json=payload,allow_redirects=True,timeout=(10,60))
-            print(f"[WEBHOOK] POST status={r.status_code} type={r.headers.get('content-type','')}",flush=True)
+            r=requests.post(WEBHOOK,json=payload,allow_redirects=True,timeout=(10,60),headers={"Content-Type":"application/json"})
+            ctype=r.headers.get("content-type","").lower()
+            print(f"[WEBHOOK] POST status={r.status_code} type={ctype}",flush=True)
             if 200<=r.status_code<300:
-                try:return r.json()
-                except ValueError:return None
-        except requests.RequestException as e:print(f"[WEBHOOK] POST error: {e}",flush=True)
-        time.sleep(2**i)
-    return None
+                try:data=r.json()
+                except ValueError:
+                    last_error=f"non-JSON response: {(r.text or '')[:200]!r}"
+                    print(f"[WEBHOOK ERROR] {last_error}",flush=True);data=None
+                if isinstance(data,dict) and data.get("status")==expected_status:
+                    return data
+                last_error=f"invalid JSON response: {data!r}"
+        except requests.RequestException as e:
+            last_error=str(e);print(f"[WEBHOOK ERROR] {e}",flush=True)
+        time.sleep(min(10,2**i))
+    raise RuntimeError(f"Webhook failed after retries: {last_error}")
 
 def post_jobs(jobs,sheet):
-    if not jobs:return
+    if not jobs:return {"added":0}
     for j in jobs:j["sheet"]=sheet
+    total=0
     for i in range(0,len(jobs),25):
-        print(f"[Sheet] sending {len(jobs[i:i+25])} jobs -> {sheet}",flush=True)
-        post({"mode":"jobs","jobs":jobs[i:i+25],"sheet":sheet})
+        batch=jobs[i:i+25]
+        print(f"[Sheet] sending {len(batch)} jobs -> {sheet}",flush=True)
+        data=post({"mode":"jobs","jobs":batch,"sheet":sheet})
+        total+=int(data.get("added",0))
+    return {"added":total}
 
 def pending():
-    if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    r=requests.get(WEBHOOK,params={"action":"pending","limit":5000,"sheet":"ALL"},allow_redirects=True,timeout=(10,90))
-    try:
-        data=r.json();jobs=data.get("jobs",[]) if isinstance(data,dict) else []
-        print(f"[Pending GET] received {len(jobs)} jobs",flush=True);return jobs
-    except ValueError:
-        print(f"[Pending GET] non-JSON status={r.status_code} body={(r.text or '')[:300]!r}",flush=True);return []
+    # POST is used deliberately: this avoids deployments where GET is redirected
+    # to an HTML Apps Script page while POST already returns JSON correctly.
+    data=post({"mode":"pending","limit":5000,"sheet":"ALL"})
+    jobs=data.get("jobs")
+    if not isinstance(jobs,list):raise RuntimeError(f"Pending response missing jobs: {data!r}")
+    print(f"[Pending POST] received {len(jobs)} jobs",flush=True)
+    return jobs
 
 def deep():
-    js=pending();print(f"[DEEP] pending={len(js)} (no artificial email-search cap)",flush=True);updates=[]
+    js=pending();print(f"[DEEP] pending={len(js)}",flush=True);updates=[]
     for i,j in enumerate(js,1):
         print(f"[DEEP] {i}/{len(js)} {j.get('entreprise')} — {j.get('intitule')} [{j.get('sheet')}] ",flush=True)
         try:
             u=enrich(j);u["sheet"]=j.get("sheet");updates.append(u)
-        except Exception as e:updates.append({"id":j.get("id"),"sheet":j.get("sheet"),"deep_status":"ERROR","email_status":"ERROR","deep_error":str(e)[:250]})
-        if len(updates)>=10:post({"mode":"enrich","updates":updates});updates=[]
+        except Exception as e:
+            updates.append({"id":j.get("id"),"sheet":j.get("sheet"),"deep_status":"ERROR","email_status":"ERROR","deep_error":str(e)[:250]})
+        if len(updates)>=10:
+            post({"mode":"enrich","updates":updates});updates=[]
     if updates:post({"mode":"enrich","updates":updates})
     print("[DEEP] complete",flush=True)
 
 def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; 1 broad query per family and zone",flush=True)
+    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; freshness window=7 days",flush=True)
     aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
     seen=set();totals={v:0 for v in aliases.values()}
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
-        jobs=fn();groups={v:[] for v in aliases.values()}
+        SOURCE_STATS[source_name]={}
+        try:
+            jobs=fn()
+        except Exception as e:
+            stat(source_name,"errors");print(f"[SOURCE ERROR] {source_name}: {e}",flush=True);jobs=[]
+        groups={v:[] for v in aliases.values()}
         for j in jobs:
             if j["id"] in seen:continue
             seen.add(j["id"]);tab=aliases.get(j.get("search_type"))
             if tab:groups[tab].append(j)
         for sheet,batch in groups.items():
-            if batch:post_jobs(batch,sheet);totals[sheet]+=len(batch)
-        print(f"[SOURCE DONE] {source_name}: {len(jobs)} discovered",flush=True)
-    print(f"[DONE] total_unique={len(seen)} groups={totals}",flush=True)
+            if batch:
+                result=post_jobs(batch,sheet);totals[sheet]+=int(result.get("added",0))
+        print(f"[SOURCE DONE] {source_name}: discovered={len(jobs)} stats={SOURCE_STATS[source_name]}",flush=True)
+    print(f"[DONE] total_unique={len(seen)} groups_added={totals}",flush=True)
+    post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"groups_added":totals,"source_stats":SOURCE_STATS}})
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--mode",choices=["scrape","deep"],default="scrape");a=p.parse_args()
