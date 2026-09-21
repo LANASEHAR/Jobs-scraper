@@ -166,6 +166,20 @@ def web_search(q,limit=10):
             stat("Search",f"{name}_exception")
     return []
 
+def send_progressive(jobs, label="progress"):
+    """Push discovered jobs to Sheets immediately; keep scraping if one push fails."""
+    if not jobs:
+        return
+    try:
+        aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
+        for key,sheet in aliases.items():
+            batch=[j for j in jobs if j.get("search_type")==key]
+            if batch:
+                result=post_jobs(batch,sheet)
+                print(f"[PROGRESS] {label} -> {sheet}: sent={len(batch)} added={result.get('added',0)}",flush=True)
+    except Exception as e:
+        print(f"[PROGRESS ERROR] {label}: {e}",flush=True)
+
 def company_from_linkedin_url(url):
     m=re.search(r"-at-([^-]+(?:-[^-]+){0,8})-(\d{6,})/?$",url)
     return clean(m.group(1).replace("-"," ")).title() if m else ""
@@ -196,6 +210,7 @@ def linkedin():
                 print(f"[LinkedIn] {family} :: keywords={keyword_query} | {st}",flush=True)
                 found=linkedin_guest_search(keyword_query,loc,remote,st)
                 if len(found)<3:found+=linkedin_web_fallback(keyword_query,loc,remote,st)
+                send_progressive(found, f"LinkedIn {family} {st}")
                 for j in found:
                     if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
                 time.sleep(2+random.random())
@@ -240,6 +255,7 @@ def indeed():
                         if not target(title):continue
                         found.append(job(title.split(" | ")[0],clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer",
                                          loc,remote,"Indeed Search",u,"","",kind))
+            send_progressive(found, f"Indeed {family} {kind}")
             for j in found:
                 if j["id"] not in seen:seen.add(j["id"]);out.append(j)
             time.sleep(1.5+random.random())
@@ -276,7 +292,9 @@ def public_web_jobs():
                 ]
                 for sq in queries:
                     items=web_search(sq,20)
-                    for j in parse_web_jobs(items,kind,remote):
+                    found=parse_web_jobs(items,kind,remote)
+                    send_progressive(found, f"Web {family} {kind}")
+                    for j in found:
                         if j["id"] not in seen:seen.add(j["id"]);out.append(j)
                     time.sleep(.5+random.random()*.5)
     print(f"[Web Search] total={len(out)}",flush=True);return out
