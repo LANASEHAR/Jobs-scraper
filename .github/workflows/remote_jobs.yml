@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   discover:
-    name: LinkedIn + Indeed + public web job discovery
+    name: Six-family job discovery
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -21,14 +21,14 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Discover fresh jobs from 23 research families
+      - name: Discover fresh jobs from LinkedIn + Indeed + public web
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
         run: python remote_scraper.py --mode scrape
 
   enrich:
-    name: Find company websites + public recruiting emails
+    name: Deep company + public email enrichment
     needs: discover
     if: ${{ needs.discover.result == 'success' }}
     runs-on: ubuntu-latest
@@ -41,7 +41,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Deep search all pending companies
+      - name: Deep search all pending jobs
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
