@@ -372,13 +372,17 @@ def post_jobs(jobs,sheet):
     return {"added":total}
 
 def pending():
-    # POST is used deliberately: this avoids deployments where GET is redirected
-    # to an HTML Apps Script page while POST already returns JSON correctly.
+    # Apps Script may return a legacy success payload with no jobs array.
+    # Treat that as an empty queue instead of failing the whole workflow.
     data=post({"mode":"pending","limit":5000,"sheet":"ALL"})
     jobs=data.get("jobs")
-    if not isinstance(jobs,list):raise RuntimeError(f"Pending response missing jobs: {data!r}")
+    if jobs is None and data.get("status")=="success":
+        jobs=[]
+    if not isinstance(jobs,list):
+        raise RuntimeError(f"Pending response missing jobs: {data!r}")
     print(f"[Pending POST] received {len(jobs)} jobs",flush=True)
     return jobs
+
 
 def deep():
     js=pending();print(f"[DEEP] pending={len(js)}",flush=True);updates=[]
