@@ -239,7 +239,7 @@ def indeed():
                         if "indeed.com" not in urlparse(u).netloc.lower():continue
                         if not target(title):continue
                         found.append(job(title.split(" | ")[0],clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer",
-                                         loc,remote,"Indeed Search",u,"","","",kind))
+                                         loc,remote,"Indeed Search",u,"","",kind))
             for j in found:
                 if j["id"] not in seen:seen.add(j["id"]);out.append(j)
             time.sleep(1.5+random.random())
@@ -258,7 +258,7 @@ def parse_web_jobs(items,kind,remote):
         m=re.search(r"\s(?:at|chez|@)\s+(.+)$",title,re.I)
         if m:company=clean(m.group(1))
         if not company:company=clean(host.split(".")[0]).title()
-        out.append(job(title,company,"Casablanca" if kind=="CASABLANCA_ONSITE" else ("Morocco" if kind=="MOROCCO_REMOTE" else "Remote / Worldwide"),remote,"Web Search",url,"","","",kind))
+        out.append(job(title,company,"Casablanca" if kind=="CASABLANCA_ONSITE" else ("Morocco" if kind=="MOROCCO_REMOTE" else "Remote / Worldwide"),remote,"Web Search",url,"","",kind))
     return out
 
 def public_web_jobs():
