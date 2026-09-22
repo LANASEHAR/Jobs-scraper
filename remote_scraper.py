@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
+from candidate_match import candidate_fit
 
 WEBHOOK=os.getenv("GOOGLE_SHEET_WEBHOOK_URL","").strip()
 SEARCHES=[
@@ -84,6 +85,11 @@ def job(title,company,loc,remote,source,url,age="",desc="",kind=None):
       "salary":"","description":clean(desc),"posted_age":clean(age),
       "posted_within_24h":"YES" if fresh_window(age,24) else "UNKNOWN",
       "search_type":kind or ("REMOTE" if remote else "CASABLANCA"),"email_status":"PENDING","email_source":"","spontaneous":"NO"}
+
+    fit_score,fit_reasons=candidate_fit(title,desc,loc,remote)
+    j["fit_score"]=str(fit_score)
+    j["fit_reasons"]="; ".join(fit_reasons)
+    return j
 
 def parse_linkedin(html,remote,search_type):
     soup=BeautifulSoup(html or "","html.parser");out=[];seen=set()
