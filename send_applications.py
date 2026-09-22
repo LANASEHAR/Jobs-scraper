@@ -22,7 +22,7 @@ SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
 FROM_NAME = os.getenv("FROM_NAME", "Halima Essaouaf").strip()
 MAX_PER_RUN = int(os.getenv("MAX_EMAILS_PER_RUN", "30"))
 MIN_FIT_SCORE = int(os.getenv("MIN_FIT_SCORE", "65"))
-CV_B64 = os.environ["CV_PDF_BASE64"]
+CV_B64 = "".join(os.getenv(f"CV_PDF_BASE64_{i}", "") for i in range(1, 5)) or os.getenv("CV_PDF_BASE64", "")
 
 def webhook(payload):
     last = ""
