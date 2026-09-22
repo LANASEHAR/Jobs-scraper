@@ -42,3 +42,35 @@ Setup:
 The scraper runs hourly. Discovery writes to the Sheet before deep research so slow company lookups do not prevent offers from being captured.
 
 Public job scrapers commonly need source-specific fallbacks because job boards can block automated requests or change their HTML. This implementation therefore continues when a source is unavailable rather than stopping the whole pipeline.
+
+
+## Morning CV-matched applications
+
+The application sender now runs in GitHub Actions instead of Apps Script.
+
+Schedule (Casablanca time):
+- 05:10 and 07:10 weekdays: discover + deep-enrich jobs and public company emails.
+- 08:05 and 09:05 weekdays: send up to 30 matched applications per window.
+- Jobs are scored against the candidate's CV-derived professional profile. The sender uses a minimum fit score of 65 and skips rows already marked SENT.
+- The CV itself is NOT stored in this public repository. It is supplied to the workflow through the `CV_PDF_BASE64` GitHub Actions secret.
+
+Required GitHub Actions secrets:
+- `GOOGLE_SHEET_WEBHOOK_URL` — existing Apps Script / Sheet webhook.
+- `SMTP_HOST` — normally `smtp.gmail.com`.
+- `SMTP_PORT` — normally `587`.
+- `SMTP_USERNAME` — sending mailbox.
+- `SMTP_PASSWORD` — SMTP/app password; never commit it.
+- `SMTP_FROM` — sending address.
+- `CV_PDF_BASE64` — base64-encoded PDF CV.
+
+For Gmail, use an app password only if your account supports it; Google says app passwords require 2-Step Verification. Do not put a normal Google account password in GitHub. The workflow uses TLS.
+
+Because the repository is public, the CV and email credentials must remain GitHub Actions secrets. GitHub encrypts repository secrets and injects them only into workflows that explicitly request them.
+
+After updating `Code.gs`, redeploy the Apps Script web app so the new `applications` webhook mode is available. The old Apps Script hourly sender is intentionally disabled to prevent duplicate applications.
+
+To create the CV secret without pasting the PDF into the GitHub web UI, use GitHub CLI locally:
+`base64 -w 0 "CV.pdf" | gh secret set CV_PDF_BASE64 --repo LANASEHAR/Jobs-scraper`
+On macOS, use `base64 < "CV.pdf" | gh secret set CV_PDF_BASE64 --repo LANASEHAR/Jobs-scraper`.
+
+Never commit the CV, SMTP password, app password, or any other credential to this public repository.
