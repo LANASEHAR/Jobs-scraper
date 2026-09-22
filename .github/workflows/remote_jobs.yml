@@ -1,48 +1,79 @@
-name: Jobs + Company Email Scraper
+name: Jobs + Company Email Scraper + Applications
 
 on:
   workflow_dispatch:
+    inputs:
+      send_applications:
+        description: "Send applications after discovery/enrichment"
+        required: false
+        default: false
+        type: boolean
   schedule:
-    - cron: '15 0,12 * * *'
+    - cron: "10 5 * * 1-5"
+      timezone: "Africa/Casablanca"
+    - cron: "10 7 * * 1-5"
+      timezone: "Africa/Casablanca"
+    - cron: "5 8,9 * * 1-5"
+      timezone: "Africa/Casablanca"
 
 permissions:
   contents: read
 
 jobs:
   discover:
-    name: Six-family job discovery
+    name: Discover and enrich matching jobs
+    if: ${{ github.event_name != 'schedule' || github.event.schedule != '5 8,9 * * 1-5' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    concurrency:
+      group: jobs-discovery
+      queue: max
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
       - name: Discover fresh jobs from LinkedIn + Indeed + public web
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-          PYTHONUNBUFFERED: '1'
+          PYTHONUNBUFFERED: "1"
         run: python remote_scraper.py --mode scrape
+      - name: Deep-search companies and public recruitment emails
+        env:
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python remote_scraper.py --mode deep
 
-  enrich:
-    name: Deep company + public email enrichment
-    needs: discover
-    if: ${{ needs.discover.result == 'success' }}
+  send_applications:
+    name: Send matched applications
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '5 8,9 * * 1-5') || (github.event_name == 'workflow_dispatch' && inputs.send_applications == true) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
+    concurrency:
+      group: applications-send
+      queue: max
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Deep search all pending jobs
+      - name: Send up to 30 matched applications
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-          PYTHONUNBUFFERED: '1'
-        run: python remote_scraper.py --mode deep
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          CV_PDF_BASE64: ${{ secrets.CV_PDF_BASE64 }}
+          MAX_EMAILS_PER_RUN: "30"
+          MIN_FIT_SCORE: "65"
+          FROM_NAME: "Halima Essaouaf"
+          PYTHONUNBUFFERED: "1"
+        run: python send_applications.py
