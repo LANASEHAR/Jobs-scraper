@@ -71,7 +71,10 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
-          CV_PDF_BASE64: ${{ secrets.CV_PDF_BASE64 }}
+          CV_PDF_BASE64_1: ${{ secrets.CV_PDF_BASE64_1 }}
+          CV_PDF_BASE64_2: ${{ secrets.CV_PDF_BASE64_2 }}
+          CV_PDF_BASE64_3: ${{ secrets.CV_PDF_BASE64_3 }}
+          CV_PDF_BASE64_4: ${{ secrets.CV_PDF_BASE64_4 }}
           MAX_EMAILS_PER_RUN: "30"
           MIN_FIT_SCORE: "65"
           FROM_NAME: "Halima Essaouaf"
