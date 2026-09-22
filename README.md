@@ -61,7 +61,7 @@ Required GitHub Actions secrets:
 - `SMTP_USERNAME` — sending mailbox.
 - `SMTP_PASSWORD` — SMTP/app password; never commit it.
 - `SMTP_FROM` — sending address.
-- `CV_PDF_BASE64` — base64-encoded PDF CV.
+- `CV_PDF_BASE64_1` through `CV_PDF_BASE64_4` — base64 chunks of the PDF CV (used because GitHub secrets have a size limit).
 
 For Gmail, use an app password only if your account supports it; Google says app passwords require 2-Step Verification. Do not put a normal Google account password in GitHub. The workflow uses TLS.
 
@@ -70,7 +70,7 @@ Because the repository is public, the CV and email credentials must remain GitHu
 After updating `Code.gs`, redeploy the Apps Script web app so the new `applications` webhook mode is available. The old Apps Script hourly sender is intentionally disabled to prevent duplicate applications.
 
 To create the CV secret without pasting the PDF into the GitHub web UI, use GitHub CLI locally:
-`base64 -w 0 "CV.pdf" | gh secret set CV_PDF_BASE64 --repo LANASEHAR/Jobs-scraper`
-On macOS, use `base64 < "CV.pdf" | gh secret set CV_PDF_BASE64 --repo LANASEHAR/Jobs-scraper`.
+`base64 -w 0 "CV.pdf" | fold -w 45000 | split -d -a 1 -b 45000 - /tmp/cv.b64.`, then set each generated chunk as `CV_PDF_BASE64_1` ... `CV_PDF_BASE64_4` with `gh secret set NAME < /tmp/cv.b64.N` (use only the chunks that exist).
+On macOS, use On macOS, generate the chunks with `base64 < "CV.pdf" | fold -w 45000 | split -d -a 1 -b 45000 - /tmp/cv.b64.` and upload the chunks as the four secrets.
 
 Never commit the CV, SMTP password, app password, or any other credential to this public repository.
