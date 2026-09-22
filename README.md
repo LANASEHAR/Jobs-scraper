@@ -71,6 +71,6 @@ After updating `Code.gs`, redeploy the Apps Script web app so the new `applicati
 
 To create the CV secret without pasting the PDF into the GitHub web UI, use GitHub CLI locally:
 `base64 -w 0 "CV.pdf" | fold -w 45000 | split -d -a 1 -b 45000 - /tmp/cv.b64.`, then set each generated chunk as `CV_PDF_BASE64_1` ... `CV_PDF_BASE64_4` with `gh secret set NAME < /tmp/cv.b64.N` (use only the chunks that exist).
-On macOS, use On macOS, generate the chunks with `base64 < "CV.pdf" | fold -w 45000 | split -d -a 1 -b 45000 - /tmp/cv.b64.` and upload the chunks as the four secrets.
+On macOS, generate the chunks with `base64 < "CV.pdf" | fold -w 45000 | split -d -a 1 -b 45000 - /tmp/cv.b64.` and upload the chunks as the four secrets.
 
 Never commit the CV, SMTP password, app password, or any other credential to this public repository.
