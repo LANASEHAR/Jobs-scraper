@@ -40,8 +40,8 @@ def webhook(payload):
     raise RuntimeError(f"Google Sheets webhook failed: {last}")
 
 def first_email(value):
-    for item in re.split(r"\\s*[/;,|]+\\s*", str(value or "")):
-        m = re.search(r"[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}", item, re.I)
+    for item in re.split(r"\s*[/;,|]+\s*", str(value or "")):
+        m = re.search(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", item, re.I)
         if m:
             return m.group(0).lower()
     return ""
