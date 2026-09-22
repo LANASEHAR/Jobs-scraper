@@ -52,7 +52,7 @@ EXCLUDE_TERMS = [
 
 def candidate_fit(title, description="", location="", remote=False):
     import re
-    text = re.sub(r"\\s+", " ", f"{title} {description}").lower()
+    text = re.sub(r"\s+", " ", f"{title} {description}").lower()
     title_l = str(title or "").lower()
     reasons = []
     score = 35
