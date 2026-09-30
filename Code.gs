@@ -376,8 +376,9 @@ function doPost(e) {
         const id = String(j.id || "").trim();
         const email = firstEmail_(j.emails_rh);
 
-        // Strict email-first filter.
-        if (!id || existing.has(id) || !email) continue;
+        // Keep the offer even when exhaustive enrichment found no public email.
+        // Email is preferred, never fabricated, but it is no longer a condition for storing the job.
+        if (!id || existing.has(id)) continue;
 
         const obj = {
           "Date Detection": j.date_detection || new Date().toISOString(),
@@ -401,7 +402,7 @@ function doPost(e) {
           "Posted Age": j.posted_age || "",
           "Posted <=24h": j.posted_within_24h || "",
           "Search Type": j.search_type || "",
-          "Email Status": "FOUND",
+          "Email Status": email ? "FOUND" : (j.email_status || "NO_EMAIL"),
           "Email Source": j.email_source || "",
           "Spontaneous": j.spontaneous || "NO",
           "Date Sent": "",
