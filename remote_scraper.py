@@ -413,6 +413,7 @@ def enrich(j):
         if local in ("support","sales","admin"):s+=20
         return s
     selected=sorted(es,key=score_email)
+    j["salary"]=extract_salary(j.get("description",""))
     fit_score,fit_reasons=fit_job(j)
     return {
       "id":j["id"],"sheet":j.get("sheet"),"company_site":site,
