@@ -372,27 +372,123 @@ def spontaneous_casablanca():
         time.sleep(.3)
     return out
 
+
+# Every board is searched explicitly. Search-engine discovery remains a
+# supplementary layer, never the only way a board is searched.
+JOB_BOARD_SEARCHES = [
+    ("Indeed", "indeed.com"),
+    ("Emploi.ma", "emploi.ma"),
+    ("ReKrute", "rekrute.com"),
+    ("Bayt", "bayt.com"),
+    ("Novojob", "novojob.com"),
+    ("Optioncarriere", "optioncarriere.ma"),
+    ("Glassdoor", "glassdoor.com"),
+    ("LinkedIn Jobs", "linkedin.com/jobs"),
+    ("Welcome to the Jungle", "welcometothejungle.com"),
+    ("Wellfound", "wellfound.com"),
+    ("Remotive", "remotive.com"),
+    ("We Work Remotely", "weworkremotely.com"),
+    ("Himalayas", "himalayas.app"),
+    ("Jobgether", "jobgether.com"),
+    ("Working Nomads", "workingnomads.com"),
+    ("Remote OK", "remoteok.com"),
+    ("TopCSJobs", "topcsjobs.com"),
+    ("Support Driven", "supportdriven.com"),
+]
+
+def _board_queries(seed, domain, kind):
+    if kind == "WORLDWIDE_REMOTE":
+        places = [
+            '"remote"','"remote worldwide"','"work from anywhere"',
+            '"fully remote"','"100% remote"'
+        ]
+    elif kind == "MOROCCO_REMOTE":
+        places = [
+            '"remote Morocco"','"Morocco remote"','"remote" Morocco',
+            '"work from Morocco"'
+        ]
+    else:
+        places = [
+            '"Casablanca"','"Casablanca Morocco"','"Casablanca, Morocco"'
+        ]
+
+    queries=[]
+    for place in places:
+        queries.extend([
+            f'site:{domain} "{seed}" {place}',
+            f'site:{domain} "{seed}" {place} job',
+            f'site:{domain} "{seed}" {place} hiring',
+        ])
+    return queries
+
+def _search_specific_board(board,domain,seed,kind,remote):
+    found=[];seen=set()
+    for q in _board_queries(seed,domain,kind):
+        items=web_search(q,20)
+        parsed=parse_web_jobs(items,kind,remote)
+        # Search-engine results are restricted to this exact board domain.
+        for j in parsed:
+            host=urlparse(j.get("lien","")).netloc.lower().replace("www.","")
+            if not (host==domain or host.endswith("."+domain)):
+                continue
+            if j["id"] in seen: continue
+            seen.add(j["id"])
+            j["source"]=board
+            found.append(j)
+        if len(found)>=30:
+            break
+        time.sleep(.2+random.random()*.4)
+    return found
+
 def public_web_jobs():
     out=[];seen=set()
+    target_sets=[
+        ("WORLDWIDE_REMOTE","remote",True),
+        ("MOROCCO_REMOTE","Morocco remote",True),
+        ("CASABLANCA_ONSITE","Casablanca",False),
+    ]
+
+    # Explicit board-by-board pass.
+    for board,domain in JOB_BOARD_SEARCHES:
+        board_total=0
+        for family,variants in SEARCHES:
+            # More than one role query per family so boards are not searched
+            # only for "customer success manager".
+            seeds=list(dict.fromkeys(variants[:4]))
+            for seed in seeds:
+                for kind,place,remote in target_sets:
+                    # Some boards are global remote boards: still search them
+                    # for Morocco-remote roles as well.
+                    found=_search_specific_board(board,domain,seed,kind,remote)
+                    board_total += len(found)
+                    for j in found:
+                        if j["id"] in seen: continue
+                        seen.add(j["id"])
+                        out.append(j)
+        print(f"[BOARD SEARCH] {board}: discovered={board_total}",flush=True)
+
+    # General public-web pass remains supplementary and can discover boards or
+    # company career pages that are not in the fixed board list.
     for family,variants in SEARCHES:
-        # Small precise queries outperform one giant OR expression on public search engines.
-        seeds=[variants[0],variants[1] if len(variants)>1 else variants[0]]
+        seeds=list(dict.fromkeys(variants[:3]))
         for seed in seeds:
-            for kind,place,remote in [("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]:
+            for kind,place,remote in target_sets:
                 queries=[
                   f'"{seed}" {place} jobs',
                   f'"{seed}" {place} hiring',
                   f'"{seed}" {place} recrutement',
-                  f'"{seed}" {place} site:emploi.ma OR site:rekrute.com OR site:bayt.com OR site:novojob.com OR site:optioncarriere.ma'
                 ]
                 for sq in queries:
                     items=web_search(sq,20)
                     found=parse_web_jobs(items,kind,remote)
-                    send_progressive(found, f"Web {family} {kind}")
                     for j in found:
-                        if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-                    time.sleep(.5+random.random()*.5)
-    print(f"[Web Search] total={len(out)}",flush=True);return out
+                        if j["id"] in seen: continue
+                        seen.add(j["id"])
+                        out.append(j)
+                    time.sleep(.3+random.random()*.5)
+
+    print(f"[Web + ALL BOARDS] total={len(out)}",flush=True)
+    return out
 
 def company_site(company):
     """Resolve the employer's official domain independently of the job portal."""
