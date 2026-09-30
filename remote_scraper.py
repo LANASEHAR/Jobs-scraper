@@ -152,7 +152,7 @@ def web_search(q,limit=10):
                 if name.startswith("DDG"):register_ddg_failure()
                 continue
             soup=BeautifulSoup(r.text,"html.parser");items=[]
-            selectors=["li.b_algo h2 a","a.result__a","a.result-link","a[href*='/url?q=']"]
+            selectors=["li.b_algo h2 a","li.b_algo a","a.result__a","a.result-link","a[data-testid='result-title-a']","a[href*='/url?q=']"]
             for sel in selectors:
                 for a in soup.select(sel):
                     href=a.get("href","");title=clean(a.get_text(" ",strip=True))
@@ -264,7 +264,8 @@ def indeed():
                 queries=[
                   f'site:indeed.com/viewjob "{keyword}" "{loc}"',
                   f'site:indeed.com/jobs "{keyword}" "{loc}"',
-                  f'site:ma.indeed.com "{keyword}" "{loc}"'
+                  f'site:ma.indeed.com "{keyword}" "{loc}"',
+                  f'site:indeed.com "{keyword}" Morocco'
                 ]
                 for q in queries:
                     for title,u in web_search(q,20):
@@ -394,11 +395,17 @@ def public_web_jobs():
     print(f"[Web Search] total={len(out)}",flush=True);return out
 
 def company_site(company):
-    if not company or company=="Unknown":return None
-    for q in [f'"{company}" official website',f'"{company}" careers jobs',f'"{company}" recruitment']:
-        for _,u in web_search(q,10):
+    """Resolve the employer's official domain independently of the job portal."""
+    if not company or company=="Unknown": return None
+    company=clean(company)
+    for q in [f'"{company}" official website', f'"{company}" contact', f'"{company}" careers']:
+        for _,u in web_search(q,20):
             host=urlparse(u).netloc.lower().replace("www.","")
-            if host and not any(host==b or host.endswith("."+b) for b in BLOCKED):return "https://"+host
+            if not host or any(host==b or host.endswith("."+b) for b in BLOCKED):
+                continue
+            if any(x in host for x in ("careerjet","jobboard")):
+                continue
+            return "https://"+host
     return None
 
 def extract_emails(html):
