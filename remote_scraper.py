@@ -396,37 +396,27 @@ JOB_BOARD_SEARCHES = [
     ("Support Driven", "supportdriven.com"),
 ]
 
-def _board_queries(seed, domain, kind):
+def _board_queries(role_expression, domain, kind):
+    """Keep board-by-board coverage broad without exploding the run time."""
     if kind == "WORLDWIDE_REMOTE":
-        places = [
-            '"remote"','"remote worldwide"','"work from anywhere"',
-            '"fully remote"','"100% remote"'
-        ]
+        places = ['"remote worldwide"', '"fully remote"', '"work from anywhere"']
     elif kind == "MOROCCO_REMOTE":
-        places = [
-            '"remote Morocco"','"Morocco remote"','"remote" Morocco',
-            '"work from Morocco"'
-        ]
+        places = ['"remote Morocco"', '"work from Morocco"', 'Morocco remote']
     else:
-        places = [
-            '"Casablanca"','"Casablanca Morocco"','"Casablanca, Morocco"'
-        ]
+        places = ['"Casablanca"', '"Casablanca Morocco"']
 
-    queries=[]
-    for place in places:
-        queries.extend([
-            f'site:{domain} "{seed}" {place}',
-            f'site:{domain} "{seed}" {place} job',
-            f'site:{domain} "{seed}" {place} hiring',
-        ])
-    return queries
+    # One compact query per location signal. The role expression contains all
+    # relevant variants for that role family.
+    return [
+        f'site:{domain} ({role_expression}) {place} jobs'
+        for place in places
+    ]
 
-def _search_specific_board(board,domain,seed,kind,remote):
+def _search_specific_board(board,domain,role_expression,kind,remote):
     found=[];seen=set()
-    for q in _board_queries(seed,domain,kind):
+    for q in _board_queries(role_expression,domain,kind):
         items=web_search(q,20)
         parsed=parse_web_jobs(items,kind,remote)
-        # Search-engine results are restricted to this exact board domain.
         for j in parsed:
             host=urlparse(j.get("lien","")).netloc.lower().replace("www.","")
             if not (host==domain or host.endswith("."+domain)):
@@ -435,8 +425,6 @@ def _search_specific_board(board,domain,seed,kind,remote):
             seen.add(j["id"])
             j["source"]=board
             found.append(j)
-        if len(found)>=30:
-            break
         time.sleep(.2+random.random()*.4)
     return found
 
@@ -452,19 +440,14 @@ def public_web_jobs():
     for board,domain in JOB_BOARD_SEARCHES:
         board_total=0
         for family,variants in SEARCHES:
-            # More than one role query per family so boards are not searched
-            # only for "customer success manager".
-            seeds=list(dict.fromkeys(variants[:4]))
-            for seed in seeds:
-                for kind,place,remote in target_sets:
-                    # Some boards are global remote boards: still search them
-                    # for Morocco-remote roles as well.
-                    found=_search_specific_board(board,domain,seed,kind,remote)
-                    board_total += len(found)
-                    for j in found:
-                        if j["id"] in seen: continue
-                        seen.add(j["id"])
-                        out.append(j)
+            role_expression=" OR ".join(f'"{v}"' for v in dict.fromkeys(variants))
+            for kind,place,remote in target_sets:
+                found=_search_specific_board(board,domain,role_expression,kind,remote)
+                board_total += len(found)
+                for j in found:
+                    if j["id"] in seen: continue
+                    seen.add(j["id"])
+                    out.append(j)
         print(f"[BOARD SEARCH] {board}: discovered={board_total}",flush=True)
 
     # General public-web pass remains supplementary and can discover boards or
