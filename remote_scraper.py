@@ -707,9 +707,9 @@ def scrape():
 # COMPANY-CENTRIC ENRICHMENT — aligned with ausbildung-scraper
 # ============================================================
 
-DEEP_SEARCH_TIMEOUT = 12
-DEEP_SEARCH_WORKERS = 12
-DEEP_CRAWL_SECONDS = 90
+DEEP_SEARCH_TIMEOUT = 7
+DEEP_SEARCH_WORKERS = 20
+DEEP_CRAWL_SECONDS = 25
 WEBHOOK_TIMEOUT = 120
 WEBHOOK_RETRIES = 3
 WEBHOOK_BATCH_SIZE = 25
