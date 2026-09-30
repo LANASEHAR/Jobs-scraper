@@ -7,6 +7,10 @@ on:
     - cron: '0 5 * * *'
     - cron: '0 17 * * *'
 
+concurrency:
+  group: remote-jobs-scraper
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -14,7 +18,7 @@ jobs:
   scrape:
     name: Jobs + spontaneous company discovery
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
