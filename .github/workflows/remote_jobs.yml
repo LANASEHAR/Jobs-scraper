@@ -3,14 +3,14 @@ name: Jobs + Company Email Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 0,12 * * *'
+    - cron: '30 3,7,11,15,19,23 * * *'
 
 permissions:
   contents: read
 
 jobs:
   scrape:
-    name: Email-first job discovery
+    name: Jobs + spontaneous company discovery
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -21,7 +21,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Discover, enrich and write only jobs with public emails
+      - name: Discover jobs and spontaneous-company targets
         env:
           GOOGLE_SHEET_WEBHOOK_URL: \${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
