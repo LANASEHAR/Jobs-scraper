@@ -358,6 +358,18 @@ def fit_job(j):
         score+=8; reasons.append("Remote-friendly")
     if any(k in text for k in ["async","autonomy","flexible","flexibility","wellbeing","work-life"]):
         score+=5; reasons.append("Positive flexibility/autonomy signal")
+    salary_text=str(j.get("salary",""))
+    sm=re.search(r"(?:€|eur|usd|\\$|£|gbp)\\s?([0-9]{2,3})(?:[.,]?[0-9]{0,3})?\\s*k", salary_text, re.I)
+    if sm:
+        amount=int(sm.group(1))
+        if ("€" in salary_text or "eur" in salary_text.lower()) and amount>=35:
+            score+=10; reasons.append("Salary signal at or above €35k")
+        elif ("$" in salary_text or "usd" in salary_text.lower()) and amount>=40:
+            score+=10; reasons.append("Salary signal at or above $40k")
+        elif amount>=30:
+            score+=5; reasons.append("Salary disclosed")
+    elif salary_text:
+        score+=3; reasons.append("Salary disclosed")
     if any(k in text for k in ["cold call","cold calling","100 calls","high volume calls","high-volume calls","commission only","night shift","rotating shifts","weekends"]):
         score-=25; reasons.append("Potential high-pressure/unsocial-hours signal")
     if any(k in text for k in ["director","vp ","vice president","chief"]):
