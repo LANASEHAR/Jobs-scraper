@@ -772,6 +772,42 @@ def _crawl_verified_site(site):
         except requests.RequestException: pass
     return ""
 
+
+def web_search(q,limit=10):
+    """Multi-engine public search. Provider failure is never treated as zero results."""
+    providers=[
+      ("Bing","https://www.bing.com/search?q="+quote_plus(q)),
+      ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q)),
+      ("DDG-Lite","https://lite.duckduckgo.com/lite/?q="+quote_plus(q))
+    ]
+    merged=[];seen=set()
+    for name,u in providers:
+        try:
+            r=S.get(u,headers=hdr(),timeout=8,allow_redirects=True)
+            if r.status_code!=200 or not r.text:
+                stat("Search",f"{name}_{r.status_code}")
+                continue
+            soup=BeautifulSoup(r.text,"html.parser")
+            links=[]
+            if name=="Bing":
+                for a in soup.select("li.b_algo h2 a[href]"):
+                    links.append((clean(a.get_text(" ",strip=True)),a.get("href","")))
+            else:
+                for a in soup.select("a.result__a[href],a.result-link[href],a[href]"):
+                    title=clean(a.get_text(" ",strip=True));href=a.get("href","")
+                    if title and href.startswith("http"):links.append((title,href))
+            for title,u2 in links:
+                if not u2.startswith("http"):continue
+                key=u2.split("#",1)[0]
+                if key in seen:continue
+                seen.add(key);merged.append((title,u2))
+                if len(merged)>=limit: break
+            if len(merged)>=limit: break
+        except requests.RequestException:
+            stat("Search",f"{name}_exception")
+    if merged: stat("Search","merged")
+    return merged[:limit]
+
 def _search_company_web(company,location=""):
     company=clean(company)
     key=_norm_company(company)
