@@ -2,7 +2,8 @@
  * JOBS SCRAPER -> GOOGLE SHEETS -> GMAIL
  * Email-first workflow for Halima Essaouaf.
  *
- * Python writes ONLY jobs where a real public email was found.
+ * Python writes every discovered job after exhaustive company-level email enrichment.
+ * Jobs without a verified public email are kept with Email Status = NO_EMAIL.
  * This script sends from the Gmail account that authorizes the Apps Script.
  * Put the CV PDF in the same Google Drive account.
  */
