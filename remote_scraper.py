@@ -34,6 +34,7 @@ BLOCKED={"linkedin.com","facebook.com","instagram.com","twitter.com","x.com","in
 PATHS=["","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us","/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers","/fr/contact","/fr/carriere","/fr/recrutement","/legal","/imprint","/impressum"]
 SEARCH_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com","welcometothejungle.com","wellfound.com","remotive.com","weworkremotely.com","himalayas.app","jobgether.com","workingnomads.com","remoteok.com","topcsjobs.com","supportdriven.com"]
 SOURCE_STATS={}
+NO_EMAIL_BUFFER=[]
 
 def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def clean(x): return re.sub(r"\s+", " ", str(x or "")).strip()
@@ -169,7 +170,7 @@ def web_search(q,limit=10):
     return []
 
 def send_progressive(jobs, label="progress"):
-    """Enrich immediately and write ONLY jobs with a verified public email."""
+    """Enrich immediately; write verified-email jobs now and buffer no-email jobs for the final fallback pass."""
     if not jobs:
         return
     enriched=[]
@@ -181,7 +182,8 @@ def send_progressive(jobs, label="progress"):
                 enriched.append(j)
                 print(f"[EMAIL-FIRST] {label}: {j.get('entreprise')} -> {u.get('emails_rh')}",flush=True)
             else:
-                print(f"[EMAIL-FIRST] {label}: skipped {j.get('entreprise')} — no public email",flush=True)
+                NO_EMAIL_BUFFER.append(j)
+                print(f"[EMAIL-FIRST] {label}: buffered {j.get('entreprise')} — no public email after enrichment",flush=True)
         except Exception as e:
             j["email_status"]="ERROR"
             j["deep_status"]="ERROR"
@@ -364,12 +366,6 @@ def spontaneous_casablanca():
         except Exception as e:
             print(f"[SPONTANEOUS ERROR] {info['name']}: {e}",flush=True)
         time.sleep(.3)
-    if out:
-        try:
-            result=post_jobs(out,"Casablanca Spontaneous")
-            print(f"[SPONTANEOUS] added={result.get('added',0)} companies={len(companies)}",flush=True)
-        except Exception as e:
-            print(f"[SPONTANEOUS POST ERROR] {e}",flush=True)
     return out
 
 def public_web_jobs():
@@ -594,8 +590,34 @@ def scrape():
         source_totals["Casablanca Spontaneous"]={"error":str(e)}
         print(f"[SPONTANEOUS ERROR] {e}",flush=True)
 
-    print(f"[DONE] total_unique={len(seen)} email_found={email_found} source_totals={source_totals}",flush=True)
-    post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"email_found":email_found,"source_stats":SOURCE_STATS}})
+    # Final fallback, inspired by the Ausbildung scraper: keep every genuinely
+    # discovered offer even when exhaustive public-email enrichment found nothing.
+    # Email-bearing offers were already written progressively; Apps Script dedupes by ID.
+    fallback={}
+    for j in NO_EMAIL_BUFFER:
+        fallback[j.get("id")]=j
+    for j in list(fallback.values()):
+        if j.get("email_status")=="FOUND" and j.get("emails_rh"):
+            continue
+        j["email_status"]=j.get("email_status") or "NO_EMAIL"
+        j["email_source"]=""
+    by_sheet={}
+    aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite","CASABLANCA_SPONTANEOUS":"Casablanca Spontaneous"}
+    for j in fallback.values():
+        st=j.get("search_type","")
+        sheet=aliases.get(st,"Worldwide Remote")
+        by_sheet.setdefault(sheet,[]).append(j)
+    fallback_added=0
+    for sheet,batch in by_sheet.items():
+        try:
+            result=post_jobs(batch,sheet)
+            fallback_added+=int(result.get("added",0))
+            print(f"[FINAL FALLBACK] {sheet}: no_email={len(batch)} added={result.get('added',0)}",flush=True)
+        except Exception as e:
+            print(f"[FINAL FALLBACK ERROR] {sheet}: {e}",flush=True)
+
+    print(f"[DONE] total_unique={len(seen)} email_found={email_found} no_email_buffer={len(fallback)} fallback_added={fallback_added} source_totals={source_totals}",flush=True)
+    post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"email_found":email_found,"no_email_buffer":len(fallback),"fallback_added":fallback_added,"source_stats":SOURCE_STATS}})
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--mode",choices=["scrape","deep"],default="scrape");a=p.parse_args()
