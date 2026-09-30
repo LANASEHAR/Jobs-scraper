@@ -2,7 +2,7 @@ name: Jobs + Company Email Scraper
 
 on:
   workflow_dispatch:
-  # Two complete runs per day. Each run can take ~4h30, so they are spaced well apart.
+  # Two complete runs per day only. 4h30 is the maximum run budget, not the frequency.
   schedule:
     - cron: '0 5 * * *'
     - cron: '0 17 * * *'
@@ -14,7 +14,7 @@ jobs:
   scrape:
     name: Jobs + spontaneous company discovery
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
