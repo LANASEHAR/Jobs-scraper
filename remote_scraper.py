@@ -359,7 +359,7 @@ def fit_job(j):
     if any(k in text for k in ["async","autonomy","flexible","flexibility","wellbeing","work-life"]):
         score+=5; reasons.append("Positive flexibility/autonomy signal")
     salary_text=str(j.get("salary",""))
-    sm=re.search(r"(?:€|eur|usd|\\$|£|gbp)\\s?([0-9]{2,3})(?:[.,]?[0-9]{0,3})?\\s*k", salary_text, re.I)
+    sm=re.search(r"(?:€|eur|usd|\$|£|gbp)\s?([0-9]{2,3})(?:[.,]?[0-9]{0,3})?\s*k", salary_text, re.I)
     if sm:
         amount=int(sm.group(1))
         if ("€" in salary_text or "eur" in salary_text.lower()) and amount>=35:
