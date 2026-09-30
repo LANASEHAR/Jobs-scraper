@@ -974,8 +974,12 @@ def _webhook_url():
     u=os.getenv("GOOGLE_SHEET_WEBHOOK_URL","").strip().strip('"').strip("'").replace("\\","")
     if not u:
         raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
+    # GitHub secrets are sometimes pasted without the URL scheme. Normalize that
+    # harmlessly instead of killing an otherwise successful 4h scraper run.
     if not re.match(r"^https?://",u,re.I):
-        raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is invalid: GitHub Secret must contain the complete https:// Apps Script /exec URL")
+        u="https://"+u.lstrip("/")
+    if not re.match(r"^https?://[^\\s/]+(?:/[^\\s]*)?$",u,re.I):
+        raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is invalid. Expected the Google Apps Script /exec URL.")
     return u
 
 def post(payload,expected_status="success"):
