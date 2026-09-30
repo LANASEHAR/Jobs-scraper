@@ -338,8 +338,8 @@ def spontaneous_casablanca():
     out=[]
     seen=set()
     for domain,info in companies.items():
-        for role in roles:
-            j=job(
+        role="Customer Success / Account Management / Sales Administration / Executive Support"
+        j=job(
               role,
               info["name"],
               "Casablanca, Morocco",
@@ -350,18 +350,18 @@ def spontaneous_casablanca():
               "Potential fit — no vacancy required",
               "CASABLANCA_SPONTANEOUS"
             )
-            j["company_site"]=info["site"]
-            j["spontaneous"]="YES"
-            # enrich() will verify the public company email before writing it.
-            try:
-                u=enrich(j); j.update(u)
-                if j.get("email_status")=="FOUND" and j.get("emails_rh"):
-                    key=j["id"]+"|"+j["emails_rh"]
-                    if key not in seen:
-                        seen.add(key); out.append(j)
-                        print(f"[SPONTANEOUS EMAIL] {info['name']} / {role} -> {j['emails_rh']}",flush=True)
-            except Exception as e:
-                print(f"[SPONTANEOUS ERROR] {info['name']} / {role}: {e}",flush=True)
+        j["company_site"]=info["site"]
+        j["spontaneous"]="YES"
+        # enrich() will verify the public company email before writing it.
+        try:
+            u=enrich(j); j.update(u)
+            if j.get("email_status")=="FOUND" and j.get("emails_rh"):
+                key=domain+"|"+j["emails_rh"]
+                if key not in seen:
+                    seen.add(key); out.append(j)
+                    print(f"[SPONTANEOUS EMAIL] {info['name']} -> {j['emails_rh']}",flush=True)
+        except Exception as e:
+            print(f"[SPONTANEOUS ERROR] {info['name']}: {e}",flush=True)
         time.sleep(.3)
     if out:
         try:
