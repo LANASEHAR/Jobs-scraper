@@ -106,16 +106,13 @@ function shouldSendNow_() {
 function sentTodayCount_() {
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
   let count = 0;
-
-  CONFIG.SHEETS.forEach(name => {
+  CONFIG.SHEETS.forEach(function(name) {
     const sh = getSheet_(name);
     const data = sh.getDataRange().getValues();
     if (data.length < 2) return;
-
     const headers = data[0];
     const statusCol = findColumn_(headers, "Status");
     const sentCol = findColumn_(headers, "Date Sent");
-
     for (let r = 1; r < data.length; r++) {
       if (statusCol < 0 || sentCol < 0) continue;
       const status = String(data[r][statusCol] || "");
@@ -125,10 +122,9 @@ function sentTodayCount_() {
         if (d === today) count++;
       }
     }
-  }
+  });
   return count;
 }
-
 function getCV_() {
   const files = DriveApp.getFilesByName(CONFIG.CV_FILE_NAME);
   if (files.hasNext()) return files.next();
