@@ -73,7 +73,7 @@ No invented emails. No CAPTCHA, authentication or anti-bot bypass.
 
 ## Schedule
 
-.github/workflows/remote_jobs.yml runs the email-first pipeline twice per day at 00:15 and 12:15 UTC, with manual dispatch available.
+.github/workflows/remote_jobs.yml runs the pipeline every 4 hours 30 minutes at 00:00, 04:30, 09:00, 13:30, 18:00 and 22:30 UTC, with manual dispatch available.
 
 The scraper searches a 72-hour freshness window so an offer is not lost if one run misses it. The Sheet keeps the Posted <=24h field so the freshest opportunities remain filterable.
 
@@ -96,8 +96,9 @@ Code.gs:
 3. Verify SPREADSHEET_ID.
 4. Run setupRemoteSheet() once.
 5. Run setupAutomation() once and authorize Gmail/Drive/Sheets.
-6. Deploy the script as a Web App (Execute as me, access suitable for your GitHub webhook).
-7. Keep the deployed /exec URL in GitHub secret GOOGLE_SHEET_WEBHOOK_URL.
+6. The scraper also performs a final Casablanca spontaneous-company search after advertised jobs are exhausted.
+7. Deploy the script as a Web App (Execute as me, access suitable for your GitHub webhook).
+8. Keep the deployed /exec URL in GitHub secret GOOGLE_SHEET_WEBHOOK_URL.
 
 ## Important quota note
 
