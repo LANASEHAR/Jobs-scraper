@@ -16,7 +16,9 @@ SEARCHES=[
  ("Revenue & Partnerships",["partnerships manager","partner success","business partnerships","sales operations","revenue operations","commercial operations","sales enablement"]),
  ("Travel-Tech & Hospitality",["travel tech","travel technology","hospitality technology","hotel tech","travel account manager","travel customer success","hospitality account manager"]),
  ("E-commerce & Digital Operations",["ecommerce manager","e-commerce manager","ecommerce operations","shopify manager","digital operations","marketplace manager","ecommerce customer success"]),
- ("Business Operations",["business operations","operations coordinator","operations specialist","project coordinator","commercial coordinator","sales coordinator","business support"])
+ ("Business Operations",["business operations","operations coordinator","operations specialist","project coordinator","commercial coordinator","sales coordinator","business support"]),
+ ("ADV & Sales Administration",["administration des ventes","ADV","sales administration","sales administrator","order management","order administrator","customer operations"]),
+ ("Executive & Administrative Support",["executive assistant","executive secretary","administrative assistant","personal assistant","office manager","assistante de direction","assistante administrative","assistante polyvalente"])
 ]
 # Keep exactly six role families. Expand query variants inside those families only.
 VARIANTS=[v for _,vs in SEARCHES for v in vs]
@@ -241,7 +243,7 @@ def parse_indeed(html,kind,remote):
         de=card.select_one("span.date,[data-testid='myJobsStateDate']");se=card.select_one(".job-snippet")
         age=clean(de.get_text(" ",strip=True) if de else "");desc=clean(se.get_text(" ",strip=True) if se else "");company=clean(ce.get_text(" ",strip=True) if ce else "")
         if not title or not company or not target(title,desc) or url in seen:continue
-        if age and not fresh_window(age,168):continue
+        if age and not fresh_window(age,72):continue
         seen.add(url);out.append(job(title,company,clean(le.get_text(" ",strip=True) if le else ""),remote,"Indeed",url,age,desc,kind))
     return out
 
@@ -290,6 +292,83 @@ def parse_web_jobs(items,kind,remote):
         if m:company=clean(m.group(1))
         if not company:company=clean(host.split(".")[0]).title()
         out.append(job(title,company,"Casablanca" if kind=="CASABLANCA_ONSITE" else ("Morocco" if kind=="MOROCCO_REMOTE" else "Remote / Worldwide"),remote,"Web Search",url,"","",kind))
+    return out
+
+
+def spontaneous_casablanca():
+    """After job discovery, search Casablanca companies that may fit the profile even without an advertised vacancy."""
+    roles=[
+      "customer success manager",
+      "account manager",
+      "key account manager",
+      "sales administrator",
+      "administration des ventes",
+      "executive assistant",
+      "assistante de direction",
+      "assistante administrative",
+      "office manager",
+      "business operations",
+      "commercial coordinator",
+      "travel account manager"
+    ]
+    company_queries=[
+      '"multinationale" Casablanca recrutement',
+      '"multinational" Casablanca Morocco careers',
+      '"international company" Casablanca Morocco careers',
+      '"shared services" Casablanca Morocco recruitment',
+      '"BPO" Casablanca Morocco headquarters careers',
+      '"SaaS" Casablanca Morocco company',
+      '"travel" Casablanca Morocco company careers',
+      '"logistics" Casablanca Morocco company careers',
+      '"ecommerce" Casablanca Morocco company careers',
+      '"FMCG" Casablanca Morocco company careers'
+    ]
+    companies={}
+    for q in company_queries:
+        for title,u in web_search(q,20):
+            host=urlparse(u).netloc.lower().replace("www.","")
+            if not host or any(host==b or host.endswith("."+b) for b in BLOCKED): continue
+            # Prefer actual company/career/contact pages over job-board pages.
+            if any(x in host for x in ["linkedin","indeed","glassdoor","bayt","rekrute","emploi.ma","novojob"]): continue
+            name=clean(re.sub(r"\s*[-|–]\s*(careers|jobs|recruitment|casablanca).*$","",title,flags=re.I))
+            if len(name)<2: name=host.split(".")[0].replace("-"," ").title()
+            key=host
+            companies[key]={"name":name,"site":"https://"+host}
+        time.sleep(.5)
+    out=[]
+    seen=set()
+    for domain,info in companies.items():
+        for role in roles:
+            j=job(
+              role,
+              info["name"],
+              "Casablanca, Morocco",
+              False,
+              "Spontaneous Company Search",
+              info["site"],
+              "",
+              "Potential fit — no vacancy required",
+              "CASABLANCA_SPONTANEOUS"
+            )
+            j["company_site"]=info["site"]
+            j["spontaneous"]="YES"
+            # enrich() will verify the public company email before writing it.
+            try:
+                u=enrich(j); j.update(u)
+                if j.get("email_status")=="FOUND" and j.get("emails_rh"):
+                    key=j["id"]+"|"+j["emails_rh"]
+                    if key not in seen:
+                        seen.add(key); out.append(j)
+                        print(f"[SPONTANEOUS EMAIL] {info['name']} / {role} -> {j['emails_rh']}",flush=True)
+            except Exception as e:
+                print(f"[SPONTANEOUS ERROR] {info['name']} / {role}: {e}",flush=True)
+        time.sleep(.3)
+    if out:
+        try:
+            result=post_jobs(out,"Casablanca Spontaneous")
+            print(f"[SPONTANEOUS] added={result.get('added',0)} companies={len(companies)}",flush=True)
+        except Exception as e:
+            print(f"[SPONTANEOUS POST ERROR] {e}",flush=True)
     return out
 
 def public_web_jobs():
@@ -482,7 +561,7 @@ def deep():
 
 def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; freshness window=72h; EMAIL-FIRST=ON",flush=True)
+    print(f"[START] {len(SEARCHES)} role families; freshness window=72h; EMAIL-FIRST=ON",flush=True)
     seen=set();email_found=0;source_totals={}
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
         SOURCE_STATS[source_name]={}
@@ -497,7 +576,17 @@ def scrape():
         found=sum(1 for j in unique if j.get("email_status")=="FOUND")
         email_found+=found
         source_totals[source_name]={"discovered":len(unique),"email_found":found,"stats":SOURCE_STATS[source_name]}
-        print(f"[SOURCE DONE] {source_name}: discovered={len(unique)} email_found={found} stats={SOURCE_STATS[source_name]}",flush=True)
+        print(f"[SOURCE DONE] {source_name}: discovered={len(unique)} email_found={found}",flush=True)
+
+    # Only after advertised-job discovery is exhausted, switch to proactive company hunting.
+    try:
+        spontaneous=spontaneous_casablanca()
+        source_totals["Casablanca Spontaneous"]={"discovered":len(spontaneous),"email_found":len(spontaneous)}
+        email_found+=len(spontaneous)
+    except Exception as e:
+        source_totals["Casablanca Spontaneous"]={"error":str(e)}
+        print(f"[SPONTANEOUS ERROR] {e}",flush=True)
+
     print(f"[DONE] total_unique={len(seen)} email_found={email_found} source_totals={source_totals}",flush=True)
     post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"email_found":email_found,"source_stats":SOURCE_STATS}})
 
