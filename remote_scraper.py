@@ -11,16 +11,16 @@ from bs4 import BeautifulSoup
 
 WEBHOOK=os.getenv("GOOGLE_SHEET_WEBHOOK_URL","").strip()
 SEARCHES=[
- ("Customer Success",["customer success","client success","customer retention","customer onboarding"]),
- ("Account Manager",["account manager","account management","client account","key account"]),
- ("Account Executive",["account executive","account sales","sales account"]),
- ("Sales",["sales","selling","commercial","revenue"]),
- ("Administrative",["administration","administrative","office operations","back office"]),
- ("Design",["designer","design","graphic design","digital design","visual design"])
+ ("Customer Success",["customer success manager","customer success","client success","client experience","customer onboarding","customer enablement","customer experience manager"]),
+ ("Account Management",["account manager","account management","key account manager","strategic account manager","client account manager","partner manager","customer account manager"]),
+ ("Revenue & Partnerships",["partnerships manager","partner success","business partnerships","sales operations","revenue operations","commercial operations","sales enablement"]),
+ ("Travel-Tech & Hospitality",["travel tech","travel technology","hospitality technology","hotel tech","travel account manager","travel customer success","hospitality account manager"]),
+ ("E-commerce & Digital Operations",["ecommerce manager","e-commerce manager","ecommerce operations","shopify manager","digital operations","marketplace manager","ecommerce customer success"]),
+ ("Business Operations",["business operations","operations coordinator","operations specialist","project coordinator","commercial coordinator","sales coordinator","business support"])
 ]
 # Keep exactly six role families. Expand query variants inside those families only.
 VARIANTS=[v for _,vs in SEARCHES for v in vs]
-EXCLUDE=["director","vice president","vp ","head of ","chief","architect","doctor","nurse","software engineer","developer","data scientist","machine learning","devops","lawyer","accountant","physician","warehouse worker","driver","internship","intern "]
+EXCLUDE=["director","vice president","vp ","head of ","chief","architect","doctor","nurse","software engineer","developer","data scientist","machine learning","devops","lawyer","accountant","physician","warehouse worker","driver","internship","intern ","cold calling","cold-call","cold call","100+ calls","high volume calls","high-volume calls","commission only","commission-only","door to door","telemarketing","night shift","overnight","rotating shifts","24/7","weekend shifts","unpaid","volunteer"]
 UA=[
  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36"
@@ -29,8 +29,8 @@ S=requests.Session()
 EMAIL_RE=re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 BAD={"example.com","sentry.io","schema.org","google.com","facebook.com","linkedin.com"}
 BLOCKED={"linkedin.com","facebook.com","instagram.com","twitter.com","x.com","indeed.com","glassdoor.com","crunchbase.com","wikipedia.org","duckduckgo.com","google.com","bing.com","youtube.com"}
-PATHS=["","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us","/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers","/fr/contact"]
-SEARCH_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com"]
+PATHS=["","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us","/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers","/fr/contact","/fr/carriere","/fr/recrutement","/legal","/imprint","/impressum"]
+SEARCH_DOMAINS=["indeed.com","emploi.ma","rekrute.com","bayt.com","novojob.com","optioncarriere.ma","glassdoor.com","linkedin.com","welcometothejungle.com","wellfound.com","remotive.com","weworkremotely.com","himalayas.app","jobgether.com","workingnomads.com","remoteok.com","topcsjobs.com","supportdriven.com"]
 SOURCE_STATS={}
 
 def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -65,7 +65,7 @@ def age_hours(t):
     if m:return int(m.group(1))*24
     return None
 
-def fresh_window(t,max_hours=168):
+def fresh_window(t,max_hours=72):
     h=age_hours(t)
     return h is not None and h<=max_hours
 
@@ -98,7 +98,7 @@ def parse_linkedin(html,remote,search_type):
         te=card.select_one("time,.job-search-card__listdate,.job-search-card__listdate--new")
         company=clean(ce.get_text(" ",strip=True) if ce else "");loc=clean(le.get_text(" ",strip=True) if le else "")
         age=clean(te.get_text(" ",strip=True) if te else "")
-        if title and company and target(title) and (fresh_window(age,168) or not age):
+        if title and company and target(title) and (fresh_window(age,72) or not age):
             out.append(job(title,company,loc,remote,"LinkedIn",urljoin("https://www.linkedin.com",href),age,kind=search_type))
     return out
 
@@ -167,18 +167,33 @@ def web_search(q,limit=10):
     return []
 
 def send_progressive(jobs, label="progress"):
-    """Push discovered jobs to Sheets immediately; keep scraping if one push fails."""
+    """Enrich immediately and write ONLY jobs with a verified public email."""
     if not jobs:
         return
-    try:
-        aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
-        for key,sheet in aliases.items():
-            batch=[j for j in jobs if j.get("search_type")==key]
-            if batch:
+    enriched=[]
+    for j in jobs:
+        try:
+            u=enrich(j)
+            j.update(u)
+            if u.get("email_status")=="FOUND" and u.get("emails_rh"):
+                enriched.append(j)
+                print(f"[EMAIL-FIRST] {label}: {j.get('entreprise')} -> {u.get('emails_rh')}",flush=True)
+            else:
+                print(f"[EMAIL-FIRST] {label}: skipped {j.get('entreprise')} — no public email",flush=True)
+        except Exception as e:
+            j["email_status"]="ERROR"
+            j["deep_status"]="ERROR"
+            print(f"[EMAIL-FIRST ERROR] {label} / {j.get('entreprise')}: {e}",flush=True)
+    aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
+    for key,sheet in aliases.items():
+        batch=[j for j in enriched if j.get("search_type")==key]
+        if batch:
+            try:
                 result=post_jobs(batch,sheet)
-                print(f"[PROGRESS] {label} -> {sheet}: sent={len(batch)} added={result.get('added',0)}",flush=True)
-    except Exception as e:
-        print(f"[PROGRESS ERROR] {label}: {e}",flush=True)
+                print(f"[PROGRESS] {label} -> {sheet}: email_found={len(batch)} added={result.get('added',0)}",flush=True)
+            except Exception as e:
+                print(f"[PROGRESS ERROR] {label} -> {sheet}: {e}",flush=True)
+    return enriched
 
 def company_from_linkedin_url(url):
     m=re.search(r"-at-([^-]+(?:-[^-]+){0,8})-(\d{6,})/?$",url)
@@ -314,30 +329,89 @@ def extract_emails(html):
     for a in soup.select('a[href^="mailto:"]'):found.add(a.get("href","")[7:].split("?")[0])
     return {e.lower().strip(" .;,<>\"'") for e in found if "@" in e and e.lower().split("@")[-1] not in BAD and not e.lower().startswith(("noreply@","no-reply@","privacy@","security@"))}
 
+def extract_salary(text):
+    x=clean(text)
+    patterns=[
+      r"(?:€|EUR|USD|\$|£|GBP)\s?([0-9]{2,3}(?:[.,][0-9]{3})?(?:[.,][0-9]{2})?)\s*(?:k|K)?",
+      r"([0-9]{2,3}(?:[.,][0-9]{3})?)\s?(?:k|K)\s?(?:€|EUR|USD|\$|£|GBP)",
+      r"(?:salary|compensation|pay|package|salaire)\s*[:\-]?\s*([^\n|]{3,40})"
+    ]
+    for p in patterns:
+        m=re.search(p,x,re.I)
+        if m:
+            return clean(m.group(0))
+    return ""
+
+def fit_job(j):
+    text=clean(" ".join(str(j.get(k,"")) for k in ("intitule","role_cible","description","entreprise"))).lower()
+    score=50
+    reasons=[]
+    if any(k in text for k in ["customer success","account manager","client success","partner manager","customer experience"]):
+        score+=15; reasons.append("Strong match with B2B customer/account experience")
+    if any(k in text for k in ["saas","travel tech","travel technology","hospitality tech","ecommerce","shopify"]):
+        score+=10; reasons.append("Relevant digital/travel/e-commerce environment")
+    if "french" in text and "english" in text:
+        score+=8; reasons.append("French + English requested")
+    elif "french" in text or "english" in text:
+        score+=4; reasons.append("Language match")
+    if any(k in text for k in ["remote","work from home","distributed","home-based"]):
+        score+=8; reasons.append("Remote-friendly")
+    if any(k in text for k in ["async","autonomy","flexible","flexibility","wellbeing","work-life"]):
+        score+=5; reasons.append("Positive flexibility/autonomy signal")
+    if any(k in text for k in ["cold call","cold calling","100 calls","high volume calls","high-volume calls","commission only","night shift","rotating shifts","weekends"]):
+        score-=25; reasons.append("Potential high-pressure/unsocial-hours signal")
+    if any(k in text for k in ["director","vp ","vice president","chief"]):
+        score-=20; reasons.append("Above current seniority target")
+    return max(0,min(100,score)), "; ".join(reasons)
+
 def enrich(j):
-    site=j.get("company_site") or company_site(j.get("entreprise",""))
-    if not site:return {"id":j["id"],"sheet":j.get("sheet"),"company_site":"","emails_rh":"","deep_status":"NO_SITE","email_status":"NOT_FOUND","email_source":""}
-    p=urlparse(site);base=f"{p.scheme}://{p.netloc}";domain=p.netloc.lower().replace("www.","");es=set();pages=False
+    company=j.get("entreprise","")
+    site=j.get("company_site") or company_site(company)
+    if not site:
+        return {"id":j["id"],"sheet":j.get("sheet"),"company_site":"","emails_rh":"",
+                "deep_status":"NO_SITE","email_status":"NOT_FOUND","email_source":"",
+                "salary":extract_salary(j.get("description",""))}
+    p=urlparse(site);base=f"{p.scheme}://{p.netloc}";domain=p.netloc.lower().replace("www.","")
+    es=set();pages=False
     for path in PATHS:
         h=fetch(base+path,10,1)
-        if h:pages=True;es|=extract_emails(h)
-    for q in [f'"{j.get("entreprise","")}" recruitment email',f'"{j.get("entreprise","")}" careers email',f'"{j.get("entreprise","")}" recrutement email']:
+        if h:
+            pages=True
+            es|=extract_emails(h)
+    queries=[
+      f'"{company}" "{domain}" email',
+      f'"{company}" "{domain}" careers recruitment',
+      f'"{company}" "@{domain}"',
+      f'"{company}" contact email',
+      f'"{company}" careers email'
+    ]
+    for q in queries:
         for _,u in web_search(q,10):
             host=urlparse(u).netloc.lower().replace("www.","")
             if host==domain or host.endswith("."+domain):
                 h=fetch(u,10,1)
-                if h:pages=True;es|=extract_emails(h)
-    def score(e):
+                if h:
+                    pages=True
+                    es|=extract_emails(h)
+    def score_email(e):
         local,dom=e.split("@",1);s=0
         if dom==domain or dom.endswith("."+domain):s-=50
         if any(k in local for k in ("career","recruit","recrut","talent","jobs","hiring","hr")):s-=20
         if local in ("info","contact"):s+=5
         if local in ("support","sales","admin"):s+=20
         return s
-    selected=sorted(es,key=score)
-    return {"id":j["id"],"sheet":j.get("sheet"),"company_site":site,"emails_rh":" / ".join(selected),
-      "deep_status":"DONE" if pages else "SITE_FOUND_NO_PAGES","email_status":"FOUND" if selected else ("NO_EMAIL" if pages else "NOT_FOUND"),
-      "email_source":"Company website / public web"}
+    selected=sorted(es,key=score_email)
+    fit_score,fit_reasons=fit_job(j)
+    return {
+      "id":j["id"],"sheet":j.get("sheet"),"company_site":site,
+      "emails_rh":" / ".join(selected),
+      "deep_status":"DONE" if pages else "SITE_FOUND_NO_PAGES",
+      "email_status":"FOUND" if selected else ("NO_EMAIL" if pages else "NOT_FOUND"),
+      "email_source":"Company website / public web" if selected else "",
+      "salary":extract_salary(j.get("description","")),
+      "fit_score":str(fit_score),
+      "fit_reasons":fit_reasons
+    }
 
 def post(payload,expected_status="success"):
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
@@ -395,26 +469,24 @@ def deep():
 
 def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; freshness window=7 days",flush=True)
-    aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
-    seen=set();totals={v:0 for v in aliases.values()}
+    print(f"[START] {len(SEARCHES)} target role families / {len(VARIANTS)} supporting keywords; freshness window=72h; EMAIL-FIRST=ON",flush=True)
+    seen=set();email_found=0;source_totals={}
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
         SOURCE_STATS[source_name]={}
         try:
             jobs=fn()
         except Exception as e:
             stat(source_name,"errors");print(f"[SOURCE ERROR] {source_name}: {e}",flush=True);jobs=[]
-        groups={v:[] for v in aliases.values()}
+        unique=[]
         for j in jobs:
             if j["id"] in seen:continue
-            seen.add(j["id"]);tab=aliases.get(j.get("search_type"))
-            if tab:groups[tab].append(j)
-        for sheet,batch in groups.items():
-            if batch:
-                result=post_jobs(batch,sheet);totals[sheet]+=int(result.get("added",0))
-        print(f"[SOURCE DONE] {source_name}: discovered={len(jobs)} stats={SOURCE_STATS[source_name]}",flush=True)
-    print(f"[DONE] total_unique={len(seen)} groups_added={totals}",flush=True)
-    post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"groups_added":totals,"source_stats":SOURCE_STATS}})
+            seen.add(j["id"]);unique.append(j)
+        found=sum(1 for j in unique if j.get("email_status")=="FOUND")
+        email_found+=found
+        source_totals[source_name]={"discovered":len(unique),"email_found":found,"stats":SOURCE_STATS[source_name]}
+        print(f"[SOURCE DONE] {source_name}: discovered={len(unique)} email_found={found} stats={SOURCE_STATS[source_name]}",flush=True)
+    print(f"[DONE] total_unique={len(seen)} email_found={email_found} source_totals={source_totals}",flush=True)
+    post({"mode":"log","run":{"finished_at":now(),"total_unique":len(seen),"email_found":email_found,"source_stats":SOURCE_STATS}})
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--mode",choices=["scrape","deep"],default="scrape");a=p.parse_args()
