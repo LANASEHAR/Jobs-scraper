@@ -185,9 +185,12 @@ def send_progressive(jobs, label="progress"):
                 NO_EMAIL_BUFFER.append(j)
                 print(f"[EMAIL-FIRST] {label}: buffered {j.get('entreprise')} — no public email after enrichment",flush=True)
         except Exception as e:
+            # An enrichment failure must not make a discovered offer disappear.
+            # Keep it for the final no-email fallback rather than inventing an address.
             j["email_status"]="ERROR"
             j["deep_status"]="ERROR"
-            print(f"[EMAIL-FIRST ERROR] {label} / {j.get('entreprise')}: {e}",flush=True)
+            NO_EMAIL_BUFFER.append(j)
+            print(f"[EMAIL-FIRST ERROR] {label} / {j.get('entreprise')}: {e} — buffered for final fallback",flush=True)
     aliases={"WORLDWIDE_REMOTE":"Worldwide Remote","MOROCCO_REMOTE":"Morocco Remote","CASABLANCA_ONSITE":"Casablanca Onsite"}
     for key,sheet in aliases.items():
         batch=[j for j in enriched if j.get("search_type")==key]
