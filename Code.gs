@@ -15,7 +15,7 @@ const CONFIG = {
   LINKEDIN: "",
   CV_FILE_NAME: "CV_Halima_Essaouaf.pdf",
 
-  SHEETS: ["Worldwide Remote", "Morocco Remote", "Casablanca Onsite"],
+  SHEETS: ["Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous"],
 
   // Gmail/Apps Script consumer accounts currently have a 100-recipient/day quota.
   // Keep a margin instead of trying to consume the entire quota.
@@ -168,7 +168,9 @@ function generateEmail_(job) {
 
   let proof = "";
 
-  if (family === "customer_success" || family === "travel") {
+  if (String(job["Spontaneous"] || "").toUpperCase() === "YES") {
+    proof = "My background combines B2B account management, customer success, commercial administration, operations and international client support. At HBX Group, I managed 600+ B2B travel-agency accounts, while my more recent experience also includes logistics, e-commerce and administrative coordination.";
+  } else if (family === "customer_success" || family === "travel") {
     proof = "At HBX Group (Hotelbeds / Bedsonline), I managed a portfolio of 600+ B2B travel-agency accounts across the Middle East, handling onboarding, training, customer support, retention and growth in Arabic, French and English.";
   } else if (family === "account") {
     proof = "At HBX Group (Hotelbeds / Bedsonline), I managed 600+ B2B travel-agency accounts, developed client relationships, supported onboarding and identified retention, upselling and growth opportunities across an international portfolio.";
