@@ -2,13 +2,10 @@ name: Jobs + Company Email Scraper
 
 on:
   workflow_dispatch:
+  # Two complete runs per day. Each run can take ~4h30, so they are spaced well apart.
   schedule:
-    - cron: '0 0 * * *'
-    - cron: '30 4 * * *'
-    - cron: '0 9 * * *'
-    - cron: '30 13 * * *'
-    - cron: '0 18 * * *'
-    - cron: '30 22 * * *'
+    - cron: '0 5 * * *'
+    - cron: '0 17 * * *'
 
 permissions:
   contents: read
