@@ -3,7 +3,12 @@ name: Jobs + Company Email Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 3,7,11,15,19,23 * * *'
+    - cron: '0 0 * * *'
+    - cron: '30 4 * * *'
+    - cron: '0 9 * * *'
+    - cron: '30 13 * * *'
+    - cron: '0 18 * * *'
+    - cron: '30 22 * * *'
 
 permissions:
   contents: read
@@ -21,7 +26,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Discover jobs and spontaneous-company targets
+      - name: Discover jobs, then hunt Casablanca companies
         env:
           GOOGLE_SHEET_WEBHOOK_URL: \${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
