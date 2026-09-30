@@ -25,6 +25,6 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Discover jobs, then hunt Casablanca companies
         env:
-          GOOGLE_SHEET_WEBHOOK_URL: \${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
         run: python remote_scraper.py --mode scrape
