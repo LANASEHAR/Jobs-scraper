@@ -272,7 +272,7 @@ def indeed():
                 if j["id"] not in seen:seen.add(j["id"]);out.append(j)
     print(f"[Indeed] total={len(out)}",flush=True);return out
 def _base_domain(host):
-    host=host.lower().replace("www.","").split(":")[0]
+    host=host.lower().replace("https://","").replace("http://","").replace("www.","").split("/")[0].split(":")[0]
     parts=host.split(".")
     return ".".join(parts[-2:]) if len(parts)>=2 else host
 
