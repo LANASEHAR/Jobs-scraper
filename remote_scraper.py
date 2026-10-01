@@ -422,40 +422,41 @@ def _search_specific_board(board,domain,role_expression,kind,remote):
     return found
 
 def public_web_jobs():
-    """Search configured boards concurrently so one slow board cannot consume the entire 120-minute budget."""
+    """High-coverage board discovery with grouped search queries.
+    Search engines are used as the index, but results are accepted from the
+    configured job boards even when the result title is not role-shaped."""
     out=[];seen=set()
-    target_sets=[("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]
+    target_sets=[
+      ("WORLDWIDE_REMOTE","remote worldwide",True),
+      ("MOROCCO_REMOTE","Morocco remote",True),
+      ("CASABLANCA_ONSITE","Casablanca Morocco",False)
+    ]
+    # Group boards to avoid hundreds of near-identical search-engine requests.
+    groups=[JOB_BOARD_SEARCHES[i:i+6] for i in range(0,len(JOB_BOARD_SEARCHES),6)]
+    board_map={_base_domain(d):(b,d) for b,d in JOB_BOARD_SEARCHES}
 
-    def search_board(item):
-        board,domain=item
-        board_found=[]
-        for family,variants in SEARCHES:
-            role_expression=" OR ".join(f'"{v}"' for v in dict.fromkeys(variants))
-            for kind,place,remote in target_sets:
-                board_found.extend(_search_specific_board(board,domain,role_expression,kind,remote))
-        return board,board_found
-
-    with ThreadPoolExecutor(max_workers=min(6,len(JOB_BOARD_SEARCHES))) as ex:
-        futures=[ex.submit(search_board,b) for b in JOB_BOARD_SEARCHES]
-        for fut in as_completed(futures):
-            board,found=fut.result()
-            unique_count=0
-            for j in found:
-                if j["id"] in seen: continue
-                seen.add(j["id"]);out.append(j);unique_count+=1
-            print(f"[BOARD SEARCH] {board}: discovered={unique_count}",flush=True)
-
-    # Small supplementary search instead of a second full 8-family x 3-location x 3-query crawl.
     for family,variants in SEARCHES:
-        for seed in list(dict.fromkeys(variants[:2])):
-            for kind,place,remote in target_sets:
-                items=web_search(f'"{seed}" {place} jobs',20)
-                for j in parse_web_jobs(items,kind,remote):
+        seeds=list(dict.fromkeys(variants[:2]))
+        role_expr=" OR ".join(f'"{x}"' for x in seeds)
+        for kind,place,remote in target_sets:
+            for group in groups:
+                sites=" OR ".join(f'site:{d}' for _,d in group)
+                q=f'({role_expr}) {place} ({sites})'
+                items=web_search(q,30)
+                parsed=parse_web_jobs(items,kind,remote,role_expr)
+                for j in parsed:
+                    host=urlparse(j.get("lien","")).netloc.lower().replace("www.","")
+                    base=_base_domain(host)
+                    if base not in board_map: continue
                     if j["id"] in seen: continue
-                    seen.add(j["id"]);out.append(j)
+                    seen.add(j["id"])
+                    j["source"]=board_map[base][0]
+                    out.append(j)
+                print(f"[BOARD GROUP] {family} {kind} group={len(group)} results={len(parsed)}",flush=True)
 
     print(f"[Web + ALL BOARDS] total={len(out)}",flush=True)
     return out
+
 def company_site(company):
     """Resolve the employer's official domain independently of the job portal."""
     if not company or company=="Unknown": return None
