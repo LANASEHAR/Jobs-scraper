@@ -934,6 +934,7 @@ def enrich_missing_emails(jobs):
             print(f"[DEEP ERROR] {group['company']}: {exc}",flush=True)
             return group,"","", "ERROR"
     if groups:
+        completed_updates=[]
         with ThreadPoolExecutor(max_workers=DEEP_SEARCH_WORKERS) as ex:
             futures=[ex.submit(one,g) for g in groups.values()]
             for fut in as_completed(futures):
@@ -947,10 +948,38 @@ def enrich_missing_emails(jobs):
                     if not j.get("salary"): j["salary"]=extract_salary(j.get("description",""))
                     score,reasons=fit_job(j)
                     j["fit_score"]=str(score);j["fit_reasons"]=reasons
+                    completed_updates.append({
+                        "id":j.get("id"),"sheet":_sheet_for(j),
+                        "company_site":j.get("company_site",""),
+                        "emails_rh":j.get("emails_rh",""),
+                        "deep_status":j.get("deep_status",""),
+                        "email_status":j.get("email_status",""),
+                        "email_source":j.get("email_source",""),
+                        "salary":j.get("salary",""),
+                        "fit_score":j.get("fit_score",""),
+                        "fit_reasons":j.get("fit_reasons","")
+                    })
                 if e:
                     print(f"[DEEP FOUND] {group['company']} -> {e} | offers={len(group['jobs'])}",flush=True)
                 else:
                     print(f"[DEEP NO EMAIL] {group['company']} | offers={len(group['jobs'])}",flush=True)
+
+                # Persist enrichment continuously. A timeout must never lose
+                # verified emails that were already found.
+                if len(completed_updates) >= 25:
+                    try:
+                        post({"mode":"enrich","updates":completed_updates})
+                        print(f"[ENRICH WRITE] persisted {len(completed_updates)} offers",flush=True)
+                    except Exception as exc:
+                        print(f"[ENRICH WRITE ERROR] {exc}",flush=True)
+                    completed_updates=[]
+
+        if completed_updates:
+            try:
+                post({"mode":"enrich","updates":completed_updates})
+                print(f"[ENRICH WRITE] persisted {len(completed_updates)} offers",flush=True)
+            except Exception as exc:
+                print(f"[ENRICH WRITE ERROR] {exc}",flush=True)
     for j in jobs:
         if not j.get("emails_rh") and not j.get("email_status"):
             j["email_status"]="NO_EMAIL"
