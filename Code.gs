@@ -421,8 +421,59 @@ function doPost(e) {
     }
 
     if (mode === "enrich") {
-      // Kept for compatibility with older webhook payloads.
-      return json_({status:"success", updated:0, received:(payload.updates || []).length});
+      const updates = Array.isArray(payload.updates) ? payload.updates : [];
+      let updated = 0;
+
+      // Update existing rows by stable job ID. This is intentionally separate
+      // from mode="jobs": discovery creates rows first, enrichment fills in
+      // verified company/email data afterwards.
+      for (const u of updates) {
+        const id = String(u.id || "").trim();
+        if (!id) continue;
+
+        const sheetNames = u.sheet && CONFIG.SHEETS.indexOf(u.sheet) >= 0
+          ? [u.sheet]
+          : CONFIG.SHEETS;
+
+        let found = false;
+        for (const name of sheetNames) {
+          if (found) break;
+          const sh = getSheet_(name);
+          const data = sh.getDataRange().getValues();
+          if (data.length < 2) continue;
+
+          const headers = data[0];
+          const idCol = findColumn_(headers, "ID");
+          if (idCol < 0) continue;
+
+          for (let r = 1; r < data.length; r++) {
+            if (String(data[r][idCol] || "").trim() !== id) continue;
+
+            const values = {
+              "Company Site": u.company_site || "",
+              "Emails RH": u.emails_rh || "",
+              "Deep Status": u.deep_status || "",
+              "Email Status": u.email_status || "",
+              "Email Source": u.email_source || "",
+              "Salary": u.salary || "",
+              "Fit Score": u.fit_score || "",
+              "Fit Reasons": u.fit_reasons || "",
+              "Last Updated": new Date()
+            };
+
+            for (const key in values) {
+              const col = findColumn_(headers, key);
+              if (col >= 0) sh.getRange(r + 1, col + 1).setValue(values[key]);
+            }
+
+            updated++;
+            found = true;
+            break;
+          }
+        }
+      }
+
+      return json_({status:"success", updated:updated, received:updates.length});
     }
 
     if (mode === "pending") {
