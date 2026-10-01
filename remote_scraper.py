@@ -397,20 +397,14 @@ JOB_BOARD_SEARCHES = [
 ]
 
 def _board_queries(role_expression, domain, kind):
-    """Keep board-by-board coverage broad without exploding the run time."""
+    """Use one focused query per board/location so one run cannot spend hours on search-engine retries."""
     if kind == "WORLDWIDE_REMOTE":
-        places = ['"remote worldwide"', '"fully remote"', '"work from anywhere"']
+        place = '"remote worldwide"'
     elif kind == "MOROCCO_REMOTE":
-        places = ['"remote Morocco"', '"work from Morocco"', 'Morocco remote']
+        place = '"remote Morocco"'
     else:
-        places = ['"Casablanca"', '"Casablanca Morocco"']
-
-    # One compact query per location signal. The role expression contains all
-    # relevant variants for that role family.
-    return [
-        f'site:{domain} ({role_expression}) {place} jobs'
-        for place in places
-    ]
+        place = '"Casablanca Morocco"'
+    return [f'site:{domain} ({role_expression}) {place} jobs']
 
 def _search_specific_board(board,domain,role_expression,kind,remote):
     found=[];seen=set()
@@ -1066,51 +1060,102 @@ def spontaneous_casablanca():
 
 def scrape():
     _webhook_url()
-    print("[START] discovery first; company-level email enrichment second; no-email offers kept",flush=True)
+    print("[START] fast discovery -> immediate Sheets write -> company enrichment",flush=True)
     NO_EMAIL_BUFFER.clear()
-    seen={};source_totals={}
+    seen={};source_totals={};added_total=0
+
+    # Critical reliability rule: every source is written to Sheets immediately.
+    # Email enrichment happens afterwards and can never erase discovered offers.
     for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
         SOURCE_STATS[source_name]={}
-        try:jobs=fn()
+        try:
+            jobs=fn()
         except Exception as e:
             stat(source_name,"errors");print(f"[SOURCE ERROR] {source_name}: {e}",flush=True);jobs=[]
-        added=0
+
+        unique=[]
         for j in jobs:
-            if j.get("id") in seen: continue
-            seen[j.get("id")]=j;added+=1
-        source_totals[source_name]={"discovered":added,"stats":SOURCE_STATS[source_name]}
-        print(f"[SOURCE DONE] {source_name}: discovered={added}",flush=True)
+            jid_value=j.get("id")
+            if not jid_value or jid_value in seen:
+                continue
+            seen[jid_value]=j
+            unique.append(j)
+
+        # Persist discovery BEFORE the expensive company-level enrichment.
+        by_sheet={}
+        for j in unique:
+            by_sheet.setdefault(_sheet_for(j),[]).append(j)
+        source_added=0
+        for sheet,batch in by_sheet.items():
+            try:
+                result=post_jobs(batch,sheet)
+                source_added += int(result.get("added",0))
+                print(f"[DISCOVERY WRITE] {source_name} -> {sheet}: {len(batch)} offers, added={result.get('added',0)}",flush=True)
+            except Exception as e:
+                print(f"[DISCOVERY WRITE ERROR] {source_name} -> {sheet}: {e}",flush=True)
+
+        added_total += source_added
+        source_totals[source_name]={"discovered":len(unique),"sheet_added":source_added,"stats":SOURCE_STATS[source_name]}
+        print(f"[SOURCE DONE] {source_name}: discovered={len(unique)} sheet_added={source_added}",flush=True)
 
     try:
         spontaneous=spontaneous_casablanca()
+        unique_spontaneous=[]
         for j in spontaneous:
-            if j.get("id") not in seen:seen[j["id"]]=j
-        source_totals["Casablanca Spontaneous"]={"discovered":len(spontaneous)}
+            if j.get("id") in seen:
+                continue
+            seen[j["id"]]=j
+            unique_spontaneous.append(j)
+        by_sheet={}
+        for j in unique_spontaneous:
+            by_sheet.setdefault(_sheet_for(j),[]).append(j)
+        source_added=0
+        for sheet,batch in by_sheet.items():
+            try:
+                result=post_jobs(batch,sheet)
+                source_added += int(result.get("added",0))
+                print(f"[DISCOVERY WRITE] Spontaneous -> {sheet}: {len(batch)} offers, added={result.get('added',0)}",flush=True)
+            except Exception as e:
+                print(f"[DISCOVERY WRITE ERROR] Spontaneous -> {sheet}: {e}",flush=True)
+        added_total += source_added
+        source_totals["Casablanca Spontaneous"]={"discovered":len(unique_spontaneous),"sheet_added":source_added}
     except Exception as e:
         source_totals["Casablanca Spontaneous"]={"error":str(e)}
         print(f"[SPONTANEOUS ERROR] {e}",flush=True)
 
     jobs=list(seen.values())
-    print(f"[COLLECTED] unique offers={len(jobs)}; unique companies={len({_norm_company(j.get('entreprise','')) for j in jobs})}",flush=True)
-    enrich_missing_emails(jobs)
+    print(f"[COLLECTED] unique offers={len(jobs)}; unique companies={len({_norm_company(j.get('entreprise',''))})}",flush=True)
+    try:
+        enrich_missing_emails(jobs)
+    except Exception as e:
+        print(f"[ENRICHMENT ERROR] {e} — discovered offers remain in Sheets",flush=True)
 
-    by_sheet={}
+    # Push enrichment updates separately. Existing rows are updated by ID;
+    # discovery is therefore safe even if this phase times out or fails.
+    updates=[]
     for j in jobs:
         j["email_status"]="FOUND" if j.get("emails_rh") else ("NO_EMAIL" if j.get("email_status")!="ERROR" else "ERROR")
-        by_sheet.setdefault(_sheet_for(j),[]).append(j)
-
-    added_total=0
-    for sheet,batch in by_sheet.items():
-        result=post_jobs(batch,sheet)
-        added_total+=int(result.get("added",0))
-        print(f"[FINAL SHEET] {sheet}: {len(batch)} offers, added={result.get('added',0)}",flush=True)
+        updates.append({
+            "id":j.get("id"),"sheet":_sheet_for(j),
+            "company_site":j.get("company_site",""),"emails_rh":j.get("emails_rh",""),
+            "deep_status":j.get("deep_status",""),"email_status":j.get("email_status",""),
+            "email_source":j.get("email_source",""),"salary":j.get("salary",""),
+            "fit_score":j.get("fit_score",""),"fit_reasons":j.get("fit_reasons","")
+        })
+    for i in range(0,len(updates),50):
+        try:
+            post({"mode":"enrich","updates":updates[i:i+50]})
+            print(f"[ENRICH WRITE] updated {len(updates[i:i+50])} offers",flush=True)
+        except Exception as e:
+            print(f"[ENRICH WRITE ERROR] batch {i//50+1}: {e}",flush=True)
 
     run={"finished_at":now(),"total_unique":len(jobs),
          "email_found":sum(1 for j in jobs if j.get("emails_rh")),
          "no_email":sum(1 for j in jobs if not j.get("emails_rh")),
          "added":added_total,"source_totals":source_totals,"source_stats":SOURCE_STATS}
     print(f"[DONE] {run}",flush=True)
-    post({"mode":"log","run":run})
+    try: post({"mode":"log","run":run})
+    except Exception as e: print(f"[LOG ERROR] {e}",flush=True)
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--mode",choices=["scrape","deep"],default="scrape");a=p.parse_args()
