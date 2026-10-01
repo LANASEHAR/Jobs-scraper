@@ -1124,7 +1124,7 @@ def scrape():
         print(f"[SPONTANEOUS ERROR] {e}",flush=True)
 
     jobs=list(seen.values())
-    print(f"[COLLECTED] unique offers={len(jobs)}; unique companies={len({_norm_company(j.get('entreprise',''))})}",flush=True)
+    print(f"[COLLECTED] unique offers={len(jobs)}; unique companies={len({_norm_company(x.get('entreprise','')) for x in jobs if _norm_company(x.get('entreprise',''))})}",flush=True)
     try:
         enrich_missing_emails(jobs)
     except Exception as e:
