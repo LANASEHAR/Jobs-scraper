@@ -254,37 +254,23 @@ def parse_indeed(html,kind,remote):
     return out
 
 def indeed():
-    # Direct Indeed HTML is frequently protected by 403. Try it once per query,
-    # then immediately use public indexed search instead of wasting the run.
+    """Use indexed Indeed discovery only; never spend minutes on a blocked direct Indeed page."""
     out=[];seen=set();targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
     for family,variants in SEARCHES:
+        keyword=variants[0]
         for kind,loc,remote in targets:
-            keyword=variants[0]
-            url=f"https://ma.indeed.com/jobs?q={quote_plus(keyword)}&l={quote_plus(loc)}&fromage=7"
-            h=fetch(url,15,0)
-            if h:
-                found=parse_indeed(h,kind,remote)
-            else:
-                found=[]
-            if not found:
-                queries=[
-                  f'site:indeed.com/viewjob "{keyword}" "{loc}"',
-                  f'site:indeed.com/jobs "{keyword}" "{loc}"',
-                  f'site:ma.indeed.com "{keyword}" "{loc}"',
-                  f'site:indeed.com "{keyword}" Morocco'
-                ]
-                for q in queries:
-                    for title,u in web_search(q,20):
-                        if "indeed.com" not in urlparse(u).netloc.lower():continue
-                        if not target(title):continue
-                        found.append(job(title.split(" | ")[0],clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer",
-                                         loc,remote,"Indeed Search",u,"","",kind))
+            found=[]
+            q=f'site:indeed.com/viewjob "{keyword}" "{loc}"'
+            for title,u in web_search(q,20):
+                host=urlparse(u).netloc.lower()
+                if "indeed.com" not in host: continue
+                if not target(title): continue
+                company=clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer"
+                found.append(job(title.split(" | ")[0],company,loc,remote,"Indeed Search",u,"","",kind))
             send_progressive(found, f"Indeed {family} {kind}")
             for j in found:
                 if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-            time.sleep(1.5+random.random())
     print(f"[Indeed] total={len(out)}",flush=True);return out
-
 def parse_web_jobs(items,kind,remote):
     out=[]
     domains=set(SEARCH_DOMAINS)
@@ -423,50 +409,40 @@ def _search_specific_board(board,domain,role_expression,kind,remote):
     return found
 
 def public_web_jobs():
+    """Search configured boards concurrently so one slow board cannot consume the entire 120-minute budget."""
     out=[];seen=set()
-    target_sets=[
-        ("WORLDWIDE_REMOTE","remote",True),
-        ("MOROCCO_REMOTE","Morocco remote",True),
-        ("CASABLANCA_ONSITE","Casablanca",False),
-    ]
+    target_sets=[("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco remote",True),("CASABLANCA_ONSITE","Casablanca",False)]
 
-    # Explicit board-by-board pass.
-    for board,domain in JOB_BOARD_SEARCHES:
-        board_total=0
+    def search_board(item):
+        board,domain=item
+        board_found=[]
         for family,variants in SEARCHES:
             role_expression=" OR ".join(f'"{v}"' for v in dict.fromkeys(variants))
             for kind,place,remote in target_sets:
-                found=_search_specific_board(board,domain,role_expression,kind,remote)
-                board_total += len(found)
-                for j in found:
-                    if j["id"] in seen: continue
-                    seen.add(j["id"])
-                    out.append(j)
-        print(f"[BOARD SEARCH] {board}: discovered={board_total}",flush=True)
+                board_found.extend(_search_specific_board(board,domain,role_expression,kind,remote))
+        return board,board_found
 
-    # General public-web pass remains supplementary and can discover boards or
-    # company career pages that are not in the fixed board list.
+    with ThreadPoolExecutor(max_workers=min(6,len(JOB_BOARD_SEARCHES))) as ex:
+        futures=[ex.submit(search_board,b) for b in JOB_BOARD_SEARCHES]
+        for fut in as_completed(futures):
+            board,found=fut.result()
+            unique_count=0
+            for j in found:
+                if j["id"] in seen: continue
+                seen.add(j["id"]);out.append(j);unique_count+=1
+            print(f"[BOARD SEARCH] {board}: discovered={unique_count}",flush=True)
+
+    # Small supplementary search instead of a second full 8-family x 3-location x 3-query crawl.
     for family,variants in SEARCHES:
-        seeds=list(dict.fromkeys(variants[:3]))
-        for seed in seeds:
+        for seed in list(dict.fromkeys(variants[:2])):
             for kind,place,remote in target_sets:
-                queries=[
-                  f'"{seed}" {place} jobs',
-                  f'"{seed}" {place} hiring',
-                  f'"{seed}" {place} recrutement',
-                ]
-                for sq in queries:
-                    items=web_search(sq,20)
-                    found=parse_web_jobs(items,kind,remote)
-                    for j in found:
-                        if j["id"] in seen: continue
-                        seen.add(j["id"])
-                        out.append(j)
-                    time.sleep(.3+random.random()*.5)
+                items=web_search(f'"{seed}" {place} jobs',20)
+                for j in parse_web_jobs(items,kind,remote):
+                    if j["id"] in seen: continue
+                    seen.add(j["id"]);out.append(j)
 
     print(f"[Web + ALL BOARDS] total={len(out)}",flush=True)
     return out
-
 def company_site(company):
     """Resolve the employer's official domain independently of the job portal."""
     if not company or company=="Unknown": return None
