@@ -3,7 +3,7 @@
 The scraper is deliberately resilient: provider blocks (403/429), search-engine
 failures, or an enrichment failure must not masquerade as a successful empty run.
 """
-import argparse, hashlib, os, random, re, time
+import argparse, hashlib, json, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -421,11 +421,117 @@ def _search_specific_board(board,domain,role_expression,kind,remote):
             seen.add(j["id"]);j["source"]=board;found.append(j)
     return found
 
+BOARD_DIRECT_STATS={}
+
+def board_stat(board,status,n=1):
+    BOARD_DIRECT_STATS.setdefault(board,{})
+    BOARD_DIRECT_STATS[board][status]=BOARD_DIRECT_STATS[board].get(status,0)+n
+
+def _accept_discovered(title,description=""):
+    text=(clean(title)+" "+clean(description)).lower()
+    return bool(title) and target(title,description) and any(v.lower() in text for v in VARIANTS)
+
+def _direct_himalayas(kind):
+    board="Himalayas"; out=[]; seen=set()
+    for _,variants in SEARCHES:
+        for seed in dict.fromkeys(variants[:3]):
+            try:
+                r=S.get("https://himalayas.app/jobs/api/search",params={"q":seed,"sort":"recent","page":1},
+                        headers=hdr(),timeout=20)
+                if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
+                for x in r.json().get("jobs",[]):
+                    title=clean(x.get("title")); desc=clean(BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True))
+                    if not _accept_discovered(title,desc): continue
+                    u=x.get("applicationLink") or x.get("guid")
+                    if not u or u in seen: continue
+                    seen.add(u)
+                    loc=", ".join(x.get("locationRestrictions") or []) or "Remote / Worldwide"
+                    j=job(title,x.get("companyName",""),loc,True,board,u,"",desc,kind)
+                    if x.get("minSalary") is not None:
+                        j["salary"]=clean(f'{x.get("minSalary")}–{x.get("maxSalary","")} {x.get("currency","")}/{x.get("salaryPeriod","")}')
+                    out.append(j)
+            except (requests.RequestException,ValueError) as e:
+                board_stat(board,"ERROR"); print(f"[BOARD ERROR] {board}: {type(e).__name__}",flush=True)
+    board_stat(board,"FOUND",len(out)); return out
+
+def _direct_remotive(kind):
+    board="Remotive"; out=[]; seen=set()
+    for _,variants in SEARCHES:
+        for seed in dict.fromkeys(variants[:3]):
+            try:
+                r=S.get("https://remotive.com/api/remote-jobs",params={"search":seed,"limit":100},
+                        headers=hdr(),timeout=20)
+                if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
+                for x in r.json().get("jobs",[]):
+                    title=clean(x.get("title")); desc=clean(BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True))
+                    if not _accept_discovered(title,desc): continue
+                    u=x.get("url")
+                    if not u or u in seen: continue
+                    seen.add(u)
+                    j=job(title,x.get("company_name",""),clean(x.get("candidate_required_location","")) or "Remote / Worldwide",
+                          True,board,u,clean(x.get("publication_date","")),desc,kind)
+                    j["salary"]=clean(x.get("salary","")); out.append(j)
+            except (requests.RequestException,ValueError) as e:
+                board_stat(board,"ERROR"); print(f"[BOARD ERROR] {board}: {type(e).__name__}",flush=True)
+    board_stat(board,"FOUND",len(out)); return out
+
+def _direct_jsonld_board(board,domain,kind,remote):
+    if board in ("Himalayas","Remotive"): return []
+    paths={
+      "Support Driven":"/jobs","Working Nomads":"/jobs","Bayt":"/en/morocco/jobs/",
+      "Novojob":"/jobs/","Glassdoor":"/Job/index.htm","LinkedIn Jobs":"/jobs/",
+      "Indeed":"/","ReKrute":"/","Emploi.ma":"/","Optioncarriere":"/",
+      "Wellfound":"/jobs","Welcome to the Jungle":"/en/jobs",
+      "We Work Remotely":"/","Remote OK":"/","TopCSJobs":"/jobs"
+    }
+    url="https://"+domain+paths.get(board,"/")
+    try:
+        r=S.get(url,headers=hdr(),timeout=15,allow_redirects=True)
+        if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); return []
+        soup=BeautifulSoup(r.text,"html.parser"); out=[];seen=set()
+        for sc in soup.select('script[type="application/ld+json"]'):
+            try: data=json.loads(sc.string or sc.get_text())
+            except Exception: continue
+            blocks=data if isinstance(data,list) else [data]
+            for x in blocks:
+                if not isinstance(x,dict) or x.get("@type")!="JobPosting": continue
+                title=clean(x.get("title")); desc=clean(BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True))
+                if not _accept_discovered(title,desc): continue
+                u=x.get("url") or url
+                if u in seen: continue
+                seen.add(u); org=x.get("hiringOrganization") or {}
+                loc=x.get("jobLocation") or {}
+                if isinstance(loc,list): loc=loc[0] if loc else {}
+                addr=(loc.get("address") or {}) if isinstance(loc,dict) else {}
+                place=clean(" ".join(str(addr.get(k,"")) for k in ("addressLocality","addressRegion","addressCountry"))) or ("Remote / Worldwide" if remote else kind.replace("_"," ").title())
+                out.append(job(title,org.get("name",""),place,remote,board,u,"",desc,kind))
+        board_stat(board,"FOUND",len(out))
+        return out
+    except requests.RequestException:
+        board_stat(board,"ERROR"); return []
+
+def direct_board_discovery():
+    out=[];seen=set()
+    for kind,_,remote in [("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]:
+        candidates=[]
+        if remote:
+            candidates += _direct_himalayas(kind)
+            candidates += _direct_remotive(kind)
+        for board,domain in JOB_BOARD_SEARCHES:
+            candidates += _direct_jsonld_board(board,domain,kind,remote)
+        for j in candidates:
+            if j["id"] not in seen: seen.add(j["id"]); out.append(j)
+    for board,stats in BOARD_DIRECT_STATS.items():
+        print(f"[BOARD STATUS] {board}: {stats}",flush=True)
+    return out
+
 def public_web_jobs():
     """High-coverage board discovery with grouped search queries.
     Search engines are used as the index, but results are accepted from the
     configured job boards even when the result title is not role-shaped."""
     out=[];seen=set()
+    for j in direct_board_discovery():
+        if j["id"] not in seen: seen.add(j["id"]); out.append(j)
     target_sets=[
       ("WORLDWIDE_REMOTE","remote worldwide",True),
       ("MOROCCO_REMOTE","Morocco remote",True),
