@@ -99,9 +99,9 @@ PORTAL_CONFIG = {
     "ausbildung.de": {"start":"https://www.ausbildung.de/"},
 }
 
-CRAWL_MAX_SITEMAPS = 12
-CRAWL_MAX_URLS_PER_PORTAL = 180
-CRAWL_MAX_DETAIL_PAGES_PER_PORTAL = 100
+CRAWL_MAX_SITEMAPS = 24
+CRAWL_MAX_URLS_PER_PORTAL = 650
+CRAWL_MAX_DETAIL_PAGES_PER_PORTAL = 260
 
 REGION_HINTS = [
     "Baden-Württemberg","Nordrhein-Westfalen","Niedersachsen","Bayern",
@@ -262,6 +262,495 @@ def ddg_queries():
                 q.append((f'site:{portal} "{term}" Ausbildung',role))
     return q
 
+
+# ---------------------------------------------------------------------------
+# PORTAL-NATIVE CRAWLER
+# ---------------------------------------------------------------------------
+# Every portal gets its own native discovery strategy before web-search
+# fallback. The crawler:
+#   1) reads robots.txt + sitemap indexes;
+#   2) discovers native search/listing/category pages;
+#   3) submits simple GET search forms when the portal exposes them;
+#   4) follows pagination and same-domain job/detail links;
+#   5) extracts JSON-LD JobPosting data first, then visible HTML;
+#   6) extracts the REAL company, location, contact/email and full description;
+#   7) keeps only relevant Ausbildung offers and never invents email addresses.
+#
+# This is intentionally much closer to the Arbeitsagentur approach than
+# site:portal search queries: the portal itself is the primary data source.
+
+PORTAL_RULES = {
+    "ihk-lehrstellenboerse.de": {
+        "seeds": ["/", "/ausbildung/"],
+        "path_terms": ["ausbildung","beruf","dokumente","stellen","lehr","suche"],
+        "detail_terms": ["/ausbildung/"],
+    },
+    "meine-ausbildung-in-niedersachsen.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","stellen","unternehmen","beruf","suche"],
+        "detail_terms": ["stellen","ausbildung"],
+    },
+    "ausbildung.nrw": {
+        "seeds": ["/", "/app/"],
+        "path_terms": ["ausbildung","unternehmen","beruf","stellen","suche","app"],
+        "detail_terms": ["ausbildung","unternehmen"],
+    },
+    "meine-ausbildung.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","stellen","beruf","suche","unternehmen"],
+        "detail_terms": ["ausbildung","stellen"],
+    },
+    "ihk-ausbildungsatlas.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","suche","unternehmen","beruf","atlas"],
+        "detail_terms": ["ausbildung","unternehmen"],
+    },
+    "ausbildungsatlas.ihk.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","suche","unternehmen","beruf","atlas"],
+        "detail_terms": ["ausbildung","unternehmen"],
+    },
+    "ausbildungsatlas.unikam.de": {
+        "seeds": ["/", "/ihk-augsburg/suche", "/ihk-wuppertal/suche"],
+        "path_terms": ["ausbildung","suche","unternehmen","beruf","atlas","ihk-"],
+        "detail_terms": ["ausbildung","unternehmen"],
+    },
+    "yourfirm.de": {
+        "seeds": ["/stellenangebote/ausbildung/"],
+        "path_terms": ["stellenangebote","ausbildung","firma","jobs","stellen"],
+        "detail_terms": ["/stellenangebote/"],
+    },
+    "hotelcareer.de": {
+        "seeds": ["/jobs/ausbildung-sonstige-ausbildungsplätze"],
+        "path_terms": ["jobs","ausbildung","hotel","stellen"],
+        "detail_terms": ["/jobs/"],
+    },
+    "hogapage.de": {
+        "seeds": ["/jobs/auszubildenderlehrling"],
+        "path_terms": ["jobs","ausbildung","auszubild","lehrling"],
+        "detail_terms": ["/jobs/"],
+    },
+    "dehoga.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","karriere","stellen","beruf"],
+        "detail_terms": ["ausbildung","stellen"],
+    },
+    "systemgastronomie-ausbildung.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","stellen","beruf","betrieb"],
+        "detail_terms": ["ausbildung","stellen"],
+    },
+    "logistikmitarbeiter.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","stellen","jobs","logistik"],
+        "detail_terms": ["ausbildung","stellen"],
+    },
+    "gastgebervonmorgen.de": {
+        "seeds": ["/"],
+        "path_terms": ["ausbildung","stellen","jobs","hotel","gastro"],
+        "detail_terms": ["ausbildung","stellen","jobs"],
+    },
+    "azubiyo.de": {
+        "seeds": ["/ausbildung/"],
+        "path_terms": ["ausbildung","stellen","jobs","berufe"],
+        "detail_terms": ["/ausbildung/"],
+    },
+    "ausbildung.de": {
+        "seeds": ["/staedte/","/jobs/"],
+        "path_terms": ["ausbildung","jobs","staedte","berufe","suche"],
+        "detail_terms": ["/ausbildung/","/jobs/","/staedte/"],
+    },
+}
+
+PORTAL_QUERY_LIMIT = 18
+PORTAL_CITY_LIMIT = 24
+
+def portal_url(base, path):
+    return urljoin(base.rstrip("/") + "/", path.lstrip("/"))
+
+def same_host(a,b):
+    return host(a) == host(b)
+
+def abs_url(base, href):
+    try:
+        return urljoin(base, href.split("#",1)[0])
+    except Exception:
+        return ""
+
+def likely_portal_path(url, portal):
+    p=urlparse(url).path.lower()
+    rule=PORTAL_RULES.get(portal,{})
+    terms=rule.get("path_terms",[])
+    return any(t in p for t in terms) or p in {"","/"}
+
+def normalize_url(url):
+    try:
+        u=urlparse(url)
+        # Strip trackers but keep meaningful query parameters.
+        keep=[]
+        for k,v in __import__("urllib.parse",fromlist=["parse_qsl"]).parse_qsl(u.query,keep_blank_values=True):
+            if k.lower() not in {"utm_source","utm_medium","utm_campaign","utm_term","utm_content","fbclid","gclid"}:
+                keep.append((k,v))
+        q=__import__("urllib.parse",fromlist=["urlencode"]).urlencode(keep)
+        return u._replace(fragment="",query=q).geturl()
+    except Exception:
+        return url
+
+def robots_and_sitemaps(base):
+    out=[]
+    robots=get(urljoin(base,"/robots.txt"),10)
+    if robots:
+        for line in robots.splitlines():
+            if line.lower().startswith("sitemap:"):
+                u=line.split(":",1)[1].strip()
+                if u: out.append(u)
+    out += [
+        urljoin(base,"/sitemap.xml"),
+        urljoin(base,"/sitemap_index.xml"),
+        urljoin(base,"/sitemap-index.xml"),
+        urljoin(base,"/wp-sitemap.xml"),
+    ]
+    return list(dict.fromkeys(out))[:CRAWL_MAX_SITEMAPS]
+
+def sitemap_urls(base):
+    found=[]
+    seen=set()
+    queue=robots_and_sitemaps(base)
+    while queue and len(seen)<CRAWL_MAX_SITEMAPS:
+        sm=queue.pop(0)
+        if sm in seen: continue
+        seen.add(sm)
+        xml=get(sm,15)
+        if not xml: continue
+        soup=BeautifulSoup(xml,"xml")
+        for loc in soup.find_all("loc"):
+            u=clean(loc.get_text())
+            if not u: continue
+            if u.lower().endswith((".xml",".xml.gz")) and u not in seen:
+                queue.append(u)
+            elif same_host(u,base):
+                found.append(u)
+            if len(found)>=CRAWL_MAX_URLS_PER_PORTAL:
+                break
+    return list(dict.fromkeys(found))[:CRAWL_MAX_URLS_PER_PORTAL]
+
+def role_slug(term):
+    s=re.sub(r"[^\w\s-]","",term.lower(),flags=re.UNICODE)
+    s=s.replace("ä","ae").replace("ö","oe").replace("ü","ue").replace("ß","ss")
+    return re.sub(r"[-\s]+","-",s).strip("-")
+
+def portal_native_seed_urls(portal, base):
+    rule=PORTAL_RULES.get(portal,{})
+    urls=[portal_url(base,p) for p in rule.get("seeds",[])]
+    # Native category/search pages observed on major portals.
+    if portal=="hotelcareer.de":
+        urls += [portal_url(base,"/jobs/hotelfachfrau-ausbildung"),
+                 portal_url(base,"/jobs/hotelkauffrau-ausbildung"),
+                 portal_url(base,"/jobs/fachkraft-gastgewerbe")]
+    elif portal=="hogapage.de":
+        urls += [portal_url(base,"/jobs/auszubildenderlehrling")]
+    elif portal=="yourfirm.de":
+        urls += [portal_url(base,"/stellenangebote/ausbildung/")]
+    elif portal=="azubiyo.de":
+        urls += [portal_url(base,f"/ausbildung/{i}/") for i in range(1,9)]
+    elif portal=="ausbildung.de":
+        urls += [portal_url(base,"/staedte/stelle/")]
+    return list(dict.fromkeys(urls))
+
+def build_portal_query_urls(portal, base, term):
+    q=quote_plus(term)
+    slug=role_slug(term)
+    urls=[]
+    # Generic GET search parameters. They are harmless on portals that ignore
+    # them, while portals with conventional search endpoints use them natively.
+    for path in PORTAL_RULES.get(portal,{}).get("seeds",["/"]):
+        u=portal_url(base,path)
+        for key in ("q","query","search","suchbegriff","keyword"):
+            urls.append(u+("&" if "?" in u else "?")+key+"="+q)
+    if portal=="hotelcareer.de":
+        urls += [
+            portal_url(base,f"/jobs/{slug}"),
+            portal_url(base,f"/jobs/{slug}-ausbildung"),
+        ]
+        for city in TARGET_CITIES[:PORTAL_CITY_LIMIT]:
+            urls.append(portal_url(base,f"/jobs/{slug}-ausbildung-{role_slug(city)}"))
+    elif portal=="hogapage.de":
+        urls.append(portal_url(base,f"/jobs/{slug}"))
+    elif portal=="yourfirm.de":
+        urls.append(portal_url(base,"/stellenangebote/ausbildung/"))
+        for city in TARGET_CITIES[:PORTAL_CITY_LIMIT]:
+            urls.append(portal_url(base,f"/stellenangebote/ausbildung/{role_slug(city)}/"))
+    elif portal=="azubiyo.de":
+        # Azubiyo exposes large native paginated Ausbildung result sets.
+        urls += [portal_url(base,f"/ausbildung/{letter}/") for letter in "abcdefghijklmnopqrstuvwxyz"]
+    elif portal=="ausbildung.de":
+        urls += [
+            portal_url(base,f"/ausbildung/{slug}/"),
+            portal_url(base,f"/jobs/{slug}/"),
+        ]
+    return list(dict.fromkeys(urls))
+
+def portal_form_search_urls(url, html, term):
+    """Submit only simple GET forms; never fabricate a hidden API or bypass auth."""
+    out=[]
+    try:
+        soup=BeautifulSoup(html,"html.parser")
+        for form in soup.find_all("form"):
+            method=(form.get("method") or "get").lower()
+            if method!="get": continue
+            action=abs_url(url,form.get("action") or url)
+            fields={}
+            for inp in form.find_all(["input","select"]):
+                name=inp.get("name")
+                if not name: continue
+                typ=(inp.get("type") or "").lower()
+                if typ in {"submit","button","hidden"}: continue
+                n=name.lower()
+                if any(k in n for k in ["search","such","query","keyword","begriff","beruf","job","q"]):
+                    fields[name]=term
+            if not fields: continue
+            from urllib.parse import urlencode
+            sep="&" if "?" in action else "?"
+            out.append(action+sep+urlencode(fields))
+    except Exception:
+        pass
+    return out[:6]
+
+def jsonld_objects(html):
+    out=[]
+    try:
+        soup=BeautifulSoup(html,"html.parser")
+        for s in soup.select('script[type="application/ld+json"]'):
+            raw=s.string or s.get_text()
+            try:
+                obj=__import__("json").loads(raw)
+            except Exception:
+                continue
+            if isinstance(obj,list): out.extend(obj)
+            elif isinstance(obj,dict) and isinstance(obj.get("@graph"),list):
+                out.extend(obj["@graph"])
+            elif isinstance(obj,dict): out.append(obj)
+    except Exception:
+        pass
+    return out
+
+def jsonld_jobposting(html):
+    for obj in jsonld_objects(html):
+        typ=obj.get("@type")
+        types=typ if isinstance(typ,list) else [typ]
+        if "JobPosting" in types:
+            return obj
+    return {}
+
+def first_text(soup, selectors):
+    for sel in selectors:
+        node=soup.select_one(sel)
+        if node:
+            t=clean(node.get_text(" ",strip=True))
+            if t: return t
+    return ""
+
+def extract_company_from_page(soup, html, jd):
+    org=jd.get("hiringOrganization") if isinstance(jd,dict) else None
+    if isinstance(org,dict):
+        n=clean(org.get("name"))
+        if n: return n
+    selectors=[
+        '[itemprop="hiringOrganization"]','[itemprop="hiringorganization"]',
+        '[class*="company"]','[class*="employer"]','[class*="arbeitgeber"]',
+        '[class*="unternehmen"]','[class*="firma"]',
+        'meta[property="og:site_name"]'
+    ]
+    v=first_text(soup,selectors)
+    if v and len(v)<180:
+        return v
+    txt=clean(soup.get_text(" ",strip=True))
+    patterns=[
+        r"(?:Arbeitgeber|Unternehmen|Firma|Ausbildungsbetrieb)\s*[:\-]\s*([^|•]{2,120})",
+        r"(?:Unternehmen|Firma)\s+([A-ZÄÖÜ][^|•]{2,100})"
+    ]
+    for pat in patterns:
+        m=re.search(pat,txt,re.I)
+        if m:
+            cand=clean(m.group(1))
+            if cand and len(cand)<180: return cand
+    return ""
+
+def extract_location_from_page(soup, html, jd):
+    loc=jd.get("jobLocation") if isinstance(jd,dict) else None
+    if isinstance(loc,list): loc=loc[0] if loc else None
+    if isinstance(loc,dict):
+        addr=loc.get("address")
+        if isinstance(addr,dict):
+            parts=[addr.get(k,"") for k in ("postalCode","addressLocality","addressRegion","addressCountry")]
+            v=clean(" ".join(x for x in parts if x))
+            if v: return v
+        v=clean(loc.get("name"))
+        if v: return v
+    v=first_text(soup,[
+        '[itemprop="jobLocation"]','[class*="location"]','[class*="standort"]',
+        '[class*="ort"]','[class*="address"]'
+    ])
+    if v and len(v)<180: return v
+    txt=clean(soup.get_text(" ",strip=True))
+    for city in TARGET_CITIES:
+        if city.lower() in txt.lower():
+            return city
+    return "Deutschland"
+
+def extract_date_from_page(jd, soup):
+    if isinstance(jd,dict):
+        for k in ("datePosted","validThrough"):
+            if jd.get(k): return clean(jd[k])
+    return first_text(soup,['time[datetime]','[itemprop="datePosted"]','[class*="date"]'])
+
+def offer_page_confidence(url, title, description, jd, portal):
+    text=(title+" "+description).lower()
+    if "JobPosting" in str(jd.get("@type","")):
+        return 100
+    if not any(x in text for x in ["ausbildung","auszubild","ausbildungsplatz","lehrstelle","lehrling","bewerbung"]):
+        return 0
+    if not any(t.lower() in text for _,_,terms in PRIORITIES for t in terms):
+        return 0
+    p=urlparse(url).path.lower()
+    if any(x in p for x in ["/jobs/","/stellen","/ausbildung/","/job/","/detail","/angebot","/lehr"]):
+        return 70
+    return 35
+
+def parse_portal_offer(url, html, portal, fallback_role="Ausbildung"):
+    if not html: return None
+    soup=BeautifulSoup(html,"html.parser")
+    jd=jsonld_jobposting(html)
+    title=clean(
+        jd.get("title") if jd else ""
+    ) or first_text(soup,["h1","meta[property='og:title']","title"])
+    if title.lower().startswith("meta"): title=""
+    main=first_text(soup,[
+        "article","main","[itemprop='description']",".job-description",
+        ".stellenbeschreibung",".job-description-content",
+        "[class*='description']","[class*='stellenbeschreibung']"
+    ])
+    description=clean(jd.get("description","")) if jd else ""
+    if len(description)<120: description=main
+    if len(description)<120:
+        description=clean(soup.get_text(" ",strip=True))[:12000]
+    conf=offer_page_confidence(url,title,description,jd,portal)
+    if conf<=0: return None
+    company=extract_company_from_page(soup,html,jd)
+    location=extract_location_from_page(soup,html,jd)
+    date=extract_date_from_page(jd,soup)
+    pscore,role,reasons=score_offer(title,description,portal,location)
+    # Strong native evidence gets a small quality bonus, but relevance still
+    # controls ranking.
+    pscore += 4 if conf>=70 else 1
+    if date:
+        reasons += "; native date="+date[:30]
+    found=emails(html)
+    email=sorted(found,key=lambda x:(not any(k in x for k in ["bewerbung","karriere","ausbildung","jobs","hr","recruit","personal"]),len(x)))[0] if found else ""
+    return {
+        "date_detection":time.strftime("%Y-%m-%d %H:%M"),
+        "statut":"NOUVEAU",
+        "role_cible":role or fallback_role,
+        "intitule":title or fallback_role,
+        "entreprise":company or "Unknown",
+        "lieu":location or "Deutschland",
+        "emails_rh":email,
+        "source":portal,
+        "lien":url,
+        "id":job_id(url,role or fallback_role),
+        "fit_score":pscore,
+        "fit_reasons":reasons+"; portal-native extraction",
+        "description":description[:16000],
+        "priority":next((p for p,r,_ in PRIORITIES if r==role),0),
+        "email_status":"FOUND" if email else "NO_EMAIL",
+        "email_source":"Verified public portal page" if email else "",
+        "portal_native":True,
+        "date_posted":date,
+    }
+
+def extract_candidate_links(page_url, html, portal):
+    soup=BeautifulSoup(html,"html.parser")
+    out=[]
+    for a in soup.select("a[href]"):
+        u=normalize_url(abs_url(page_url,a.get("href","")))
+        if not u or not same_host(u,page_url): continue
+        if u.startswith(("mailto:","javascript:","tel:")): continue
+        if likely_portal_path(u,portal):
+            out.append(u)
+    return list(dict.fromkeys(out))
+
+def search_portal_native(portal):
+    cfg=PORTAL_CONFIG.get(portal,{})
+    base=cfg.get("start","")
+    if not base: return []
+    urls=portal_native_seed_urls(portal,base)
+    # Sitemap URLs are a major source of completeness on large portals.
+    urls += sitemap_urls(base)
+    # Query every relevant role, not only the first two synonyms.
+    for _,role,terms in PRIORITIES:
+        for term in terms[:5]:
+            urls += build_portal_query_urls(portal,base,term)
+    urls=list(dict.fromkeys(urls))
+
+    queue=list(urls[:CRAWL_MAX_URLS_PER_PORTAL])
+    queued=set(queue); visited=set(); detail_pages=0
+    out=[]; seen_jobs=set()
+
+    while queue and len(visited)<CRAWL_MAX_URLS_PER_PORTAL:
+        u=queue.pop(0)
+        if u in visited: continue
+        visited.add(u)
+        html=get(u,15)
+        if not html: continue
+
+        # If a portal exposes a conventional GET search form, use it too.
+        if len(visited)<=40:
+            for _,_,terms in PRIORITIES:
+                for term in terms[:2]:
+                    for su in portal_form_search_urls(u,html,term):
+                        if su not in queued and len(queued)<CRAWL_MAX_URLS_PER_PORTAL+120:
+                            queue.append(su); queued.add(su)
+
+        offer=parse_portal_offer(u,html,portal)
+        if offer and offer["id"] not in seen_jobs:
+            seen_jobs.add(offer["id"])
+            # The IHK Ausbildungsatlas is a training/company information atlas;
+            # it explicitly may not contain open vacancies. Do not turn a
+            # static company profile into a fake open job.
+            if "ausbildungsatlas" in portal and not any(x in (offer["intitule"]+" "+offer["description"]).lower()
+                for x in ["bewerben","bewerbung","offene stelle","ausbildungsplatz","freie ausbildungs","stellenangebot","auszubild"]):
+                offer["portal_info_only"]=True
+            else:
+                out.append(offer)
+            detail_pages += 1
+            if detail_pages>=CRAWL_MAX_DETAIL_PAGES_PER_PORTAL:
+                break
+
+        for v in extract_candidate_links(u,html,portal):
+            if v in visited or v in queued: continue
+            # Do not spend the crawl budget on legal/news/media/assets pages.
+            low=v.lower()
+            if any(x in low for x in ["/datenschutz","/impressum","/kontakt","/cookie","/privacy","/newsletter","/magazin","/nachrichten"]):
+                continue
+            queue.append(v); queued.add(v)
+            if len(queued)>=CRAWL_MAX_URLS_PER_PORTAL:
+                break
+
+    print(f"[PORTAL] {portal}: visited={len(visited)} offers={len(out)} detail_pages={detail_pages}")
+    return out
+
+def search_portals_native():
+    all_jobs=[]
+    # Each portal is isolated: a failure on one source must never stop the
+    # complete Ausbildung run.
+    for portal in PORTALS:
+        if portal=="arbeitsagentur.de": continue
+        try:
+            all_jobs.extend(search_portal_native(portal))
+        except Exception as exc:
+            print(f"[PORTAL ERROR] {portal}: {type(exc).__name__}: {exc}")
+    return all_jobs
+
 def search_web():
     out=[]; seen=set()
     for query,fallback_role in ddg_queries():
@@ -278,7 +767,16 @@ def search_web():
             key=u.split("#",1)[0]
             if key in seen: continue
             seen.add(key)
-            company=h.split(".")[0].replace("-"," ").title()
+            company=""
+            # Search-result text sometimes contains the employer before the snippet.
+            result_text=clean(res.get_text(" ",strip=True))
+            for pat in [r"([A-ZÄÖÜ][A-Za-zÄÖÜäöüß&.\- ]{2,90})\s+(?:\||–|-)?\s*Ausbildung",
+                        r"(?:bei|von)\s+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß&.\- ]{2,90})"]:
+                m=re.search(pat,result_text,re.I)
+                if m:
+                    company=clean(m.group(1)); break
+            if not company:
+                company=h.split(".")[0].replace("-"," ").title()
             score,role,reasons=score_offer(title,snippet,f"Web search {h}","Deutschland")
             out.append({
                 "date_detection":time.strftime("%Y-%m-%d %H:%M"),"statut":"NOUVEAU",
@@ -294,7 +792,7 @@ def search_ba():
     api="https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
     headers={"User-Agent":"Jobsuche/2.9.2 (compatible)","X-API-Key":"jobboerse-jobsuche","Accept":"application/json","Accept-Language":"de-DE"}
     for _,role,terms in PRIORITIES:
-        for term in terms[:2]:
+        for term in terms[:5]:
             try:
                 data=S.get(api,params={"was":term,"wo":"Deutschland","angebotsart":4,"size":100},headers=headers,timeout=20).json()
             except Exception:
