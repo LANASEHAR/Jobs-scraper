@@ -11,17 +11,62 @@ import requests
 from bs4 import BeautifulSoup
 
 PRIORITIES = [
-    (100, "Hotelfachfrau", ["hotelfachfrau", "hotelfachmann", "ausbildung hotelfachfrau"]),
-    (95, "Fachfrau für Systemgastronomie", ["fachfrau für systemgastronomie", "fachmann für systemgastronomie", "systemgastronomie ausbildung"]),
-    (92, "Fachfrau für Restaurants und Veranstaltungsgastronomie", ["restaurants und veranstaltungsgastronomie", "restaurantfachfrau", "veranstaltungsgastronomie ausbildung"]),
-    (90, "Fachkraft für Gastronomie", ["fachkraft gastronomie", "fachkraft für gastronomie"]),
-    (85, "Kaufmann/-frau für Spedition und Logistikdienstleistung", ["spedition und logistikdienstleistung", "speditionskaufmann ausbildung"]),
-    (82, "Kaufmann/-frau im Groß- und Außenhandelsmanagement", ["groß und außenhandelsmanagement", "groß- und außenhandelsmanagement", "großhandel ausbildung"]),
-    (76, "Kaufmann/-frau im Einzelhandel", ["kaufmann einzelhandel ausbildung", "kauffrau einzelhandel ausbildung", "einzelhandel ausbildung"]),
-    (74, "Verkäufer/in", ["verkäufer ausbildung", "verkäuferin ausbildung"]),
-    (68, "Kaufmann/-frau für Büromanagement", ["büromanagement ausbildung", "kaufmann büromanagement", "kauffrau büromanagement"]),
-    (64, "Kaufmann/-frau für Hotelmanagement", ["hotelmanagement ausbildung", "kaufmann hotelmanagement"]),
-    (58, "Industriekaufmann/-frau", ["industriekaufmann ausbildung", "industriekauffrau ausbildung"]),
+    (100, "Hotelfachfrau", [
+        "hotelfachfrau","hotelfachmann","hotelfachleute","hotelfachkraft",
+        "ausbildung hotelfachfrau","ausbildung hotelfachmann","ausbildung im hotelfach"
+    ]),
+    (98, "Kaufmann/-frau für Hotelmanagement", [
+        "kaufmann hotelmanagement","kauffrau hotelmanagement","hotelmanagement ausbildung",
+        "hotel kaufmann ausbildung","hotel kaufrau ausbildung"
+    ]),
+    (95, "Fachfrau für Systemgastronomie", [
+        "fachfrau für systemgastronomie","fachmann für systemgastronomie",
+        "systemgastronomie ausbildung","fachkraft systemgastronomie"
+    ]),
+    (92, "Fachfrau für Restaurants und Veranstaltungsgastronomie", [
+        "restaurants und veranstaltungsgastronomie","restaurantfachfrau",
+        "restaurantfachmann","veranstaltungsgastronomie ausbildung",
+        "restaurantfachkraft ausbildung"
+    ]),
+    (90, "Fachkraft für Gastronomie", [
+        "fachkraft gastronomie","fachkraft für gastronomie","gastronomie ausbildung",
+        "fachkraft gastgewerbe ausbildung"
+    ]),
+    (87, "Kaufmann/-frau für Tourismus und Freizeit", [
+        "kaufmann tourismus und freizeit","kauffrau tourismus und freizeit",
+        "tourismuskaufmann ausbildung","tourismuskauffrau ausbildung",
+        "tourismus ausbildung"
+    ]),
+    (85, "Kaufmann/-frau für Spedition und Logistikdienstleistung", [
+        "spedition und logistikdienstleistung","speditionskaufmann ausbildung",
+        "speditionskauffrau ausbildung","kaufmann spedition logistik",
+        "kauffrau spedition logistik"
+    ]),
+    (82, "Kaufmann/-frau im Groß- und Außenhandelsmanagement", [
+        "groß und außenhandelsmanagement","groß- und außenhandelsmanagement",
+        "großhandel ausbildung","außenhandel ausbildung",
+        "kaufmann großhandel","kauffrau großhandel"
+    ]),
+    (78, "Kaufmann/-frau im E-Commerce", [
+        "kaufmann e-commerce","kauffrau e-commerce","e-commerce ausbildung",
+        "kaufmann im e-commerce","kauffrau im e-commerce"
+    ]),
+    (76, "Kaufmann/-frau im Einzelhandel", [
+        "kaufmann einzelhandel ausbildung","kauffrau einzelhandel ausbildung",
+        "einzelhandel ausbildung","kaufmann im einzelhandel","kauffrau im einzelhandel"
+    ]),
+    (74, "Verkäufer/in", [
+        "verkäufer ausbildung","verkäuferin ausbildung","ausbildung verkäufer",
+        "ausbildung verkäuferin"
+    ]),
+    (68, "Kaufmann/-frau für Büromanagement", [
+        "büromanagement ausbildung","kaufmann büromanagement","kauffrau büromanagement",
+        "kaufmann für büromanagement","kauffrau für büromanagement"
+    ]),
+    (58, "Industriekaufmann/-frau", [
+        "industriekaufmann ausbildung","industriekauffrau ausbildung",
+        "industriekaufmann","industriekauffrau"
+    ]),
 ]
 
 PORTALS = [
@@ -32,9 +77,66 @@ PORTALS = [
     "systemgastronomie-ausbildung.de","logistikmitarbeiter.de","gastgebervonmorgen.de"
 ]
 
+# Portal-native crawling configuration.
+# Each portal is treated as an independent source. Native crawling is attempted
+# before search-engine discovery; DDG remains only a fallback for inaccessible pages.
+PORTAL_CONFIG = {
+    "ihk-lehrstellenboerse.de": {"start":"https://www.ihk-lehrstellenboerse.de/"},
+    "meine-ausbildung-in-niedersachsen.de": {"start":"https://meine-ausbildung-in-niedersachsen.de/"},
+    "ausbildung.nrw": {"start":"https://www.ausbildung.nrw/"},
+    "meine-ausbildung.de": {"start":"https://www.meine-ausbildung.de/"},
+    "ihk-ausbildungsatlas.de": {"start":"https://www.ihk-ausbildungsatlas.de/"},
+    "ausbildungsatlas.ihk.de": {"start":"https://ausbildungsatlas.ihk.de/"},
+    "ausbildungsatlas.unikam.de": {"start":"https://ausbildungsatlas.unikam.de/"},
+    "yourfirm.de": {"start":"https://www.yourfirm.de/"},
+    "hotelcareer.de": {"start":"https://www.hotelcareer.de/"},
+    "hogapage.de": {"start":"https://www.hogapage.de/"},
+    "dehoga.de": {"start":"https://www.dehoga.de/"},
+    "systemgastronomie-ausbildung.de": {"start":"https://www.systemgastronomie-ausbildung.de/"},
+    "logistikmitarbeiter.de": {"start":"https://www.logistikmitarbeiter.de/"},
+    "gastgebervonmorgen.de": {"start":"https://www.gastgebervonmorgen.de/"},
+    "azubiyo.de": {"start":"https://www.azubiyo.de/"},
+    "ausbildung.de": {"start":"https://www.ausbildung.de/"},
+}
+
+CRAWL_MAX_SITEMAPS = 12
+CRAWL_MAX_URLS_PER_PORTAL = 180
+CRAWL_MAX_DETAIL_PAGES_PER_PORTAL = 100
+
 REGION_HINTS = [
     "Baden-Württemberg","Nordrhein-Westfalen","Niedersachsen","Bayern",
     "Sachsen","Thüringen","Sachsen-Anhalt","Mecklenburg-Vorpommern"
+]
+
+# Explicit city targets. Smaller/medium cities are deliberately included so the
+# scraper does not collapse onto Munich, Berlin, Hamburg and other large cities.
+TARGET_CITIES = [
+    # Baden-Württemberg
+    "Stuttgart","Mannheim","Karlsruhe","Freiburg","Heidelberg","Ulm","Heilbronn",
+    "Pforzheim","Reutlingen","Tübingen","Konstanz","Offenburg","Ravensburg",
+    "Aalen","Esslingen","Ludwigsburg","Göppingen","Villingen-Schwenningen",
+    "Baden-Baden","Baiersbronn","Friedrichshafen",
+    # Bavaria
+    "Nürnberg","Augsburg","Regensburg","Würzburg","Ingolstadt","Bamberg",
+    "Bayreuth","Erlangen","Landshut","Passau","Rosenheim","Kempten",
+    "Aschaffenburg","Coburg","Hof","Ansbach","Deggendorf",
+    # NRW
+    "Dortmund","Essen","Duisburg","Münster","Bielefeld","Aachen","Bonn",
+    "Paderborn","Siegen","Bochum","Wuppertal","Mönchengladbach","Krefeld",
+    "Gelsenkirchen","Hagen",
+    # Lower Saxony
+    "Hannover","Braunschweig","Göttingen","Osnabrück","Oldenburg","Wolfsburg",
+    "Hildesheim","Salzgitter","Lüneburg","Celle","Goslar",
+    # Saxony
+    "Dresden","Leipzig","Chemnitz","Zwickau","Plauen","Görlitz","Bautzen",
+    "Freiberg","Meißen",
+    # Thuringia
+    "Erfurt","Jena","Weimar","Gera","Eisenach","Gotha","Suhl","Nordhausen",
+    # Saxony-Anhalt
+    "Magdeburg","Halle","Dessau-Roßlau","Wernigerode","Quedlinburg","Stendal",
+    # Mecklenburg-Vorpommern
+    "Rostock","Schwerin","Neubrandenburg","Stralsund","Greifswald","Wismar",
+    "Güstrow"
 ]
 
 FOREIGN_SIGNALS = [
@@ -146,14 +248,18 @@ def job_id(url,role):
 def ddg_queries():
     q=[]
     for _,role,terms in PRIORITIES:
-        for term in terms[:2]:
+        for term in terms[:4]:
             q.append((f'"{term}" Ausbildung Bewerbung Kontakt E-Mail Deutschland 2026',role))
             q.append((f'"{term}" Bewerber aus dem Ausland Deutschland',role))
-        if any(x in role for x in ["Hotel","Gastronomie","Restaurants"]):
+            for city in TARGET_CITIES[:18]:
+                q.append((f'"{term}" Ausbildung "{city}"',role))
+        if any(x in role.lower() for x in ["hotel","gastronomie","restaurants"]):
             q.append((f'"{role}" Marokko Ausbildung Bewerbung',role))
     for portal in PORTALS:
-        for term in ["Hotelfachfrau","Systemgastronomie","Spedition Logistik","Groß- und Außenhandel"]:
-            q.append((f'site:{portal} "{term}" Ausbildung 2026',term))
+        if portal=="arbeitsagentur.de": continue
+        for _,role,terms in PRIORITIES:
+            for term in terms[:2]:
+                q.append((f'site:{portal} "{term}" Ausbildung',role))
     return q
 
 def search_web():
@@ -226,7 +332,7 @@ def enrich(jobs):
 
 def main():
     print("=== AUSBILDUNG PRIORITY SCRAPER ===")
-    jobs=search_ba()+search_web()
+    jobs=search_ba()+search_portals_native()+search_web()
     unique={j["id"]:j for j in jobs}
     jobs=enrich(list(unique.values()))
     jobs.sort(key=lambda j:(-int(j.get("fit_score",0)),-int(j.get("priority",0))))
