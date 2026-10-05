@@ -2,7 +2,7 @@
 Discovery is independent from email enrichment: a blocked board can never erase
 or prevent jobs found by other sources.
 """
-import argparse, hashlib, json, os, random, re, time
+import argparse, hashlib, json, os, random, re, time, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -63,8 +63,8 @@ SOURCE_STATS = {}
 BOARD_STATS = {}
 NO_EMAIL_BUFFER = []
 
-DEEP_TIMEOUT = 7
-DEEP_WORKERS = 20
+DEEP_TIMEOUT = 5
+DEEP_WORKERS = 16
 WEBHOOK_TIMEOUT = 90
 WEBHOOK_RETRIES = 3
 WEBHOOK_BATCH = 25
@@ -72,10 +72,14 @@ PATHS = [
     "","/contact","/contact-us","/careers","/career","/jobs","/join-us","/work-with-us",
     "/recruitment","/human-resources","/hr","/about","/en/contact","/en/careers",
     "/fr/contact","/fr/carriere","/fr/recrutement","/legal","/imprint","/impressum",
-    "/kontakt","/karriere","/bewerbung","/stellenangebote","/ansprechpartner",
+    "/kontakt","/karriere","/bewerbung","/stellenangebote",
 ]
 START = time.monotonic()
-MAX_RUNTIME = 35 * 60
+MAX_RUNTIME = 40 * 60
+SEARCH_CACHE = {}
+SEARCH_CACHE_LOCK = threading.Lock()
+LINKEDIN_API_DISABLED = False
+LINKEDIN_API_LOCK = threading.Lock()
 
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -170,39 +174,65 @@ def fetch(url, timeout=10, retries=1):
     return None
 
 def web_search(q, limit=20):
-    """Merge independent public indexes. One engine failing never means zero jobs."""
-    providers = [
-        ("Bing", "https://www.bing.com/search?q=" + quote_plus(q)),
-        ("Google", "https://www.google.com/search?q=" + quote_plus(q)),
-        ("DDG", "https://html.duckduckgo.com/html/?q=" + quote_plus(q)),
-        ("DDG-Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q)),
+    """Use a bounded public-index fanout. Cache identical queries and never let one engine block the run."""
+    key=(clean(q),int(limit))
+    with SEARCH_CACHE_LOCK:
+        cached=SEARCH_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
+    providers=[
+        ("Bing","https://www.bing.com/search?q="+quote_plus(q)),
+        ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q)),
     ]
-    merged, seen = [], set()
-    for name, url in providers:
+    merged=[]; seen=set()
+    for name,url in providers:
         if not budget_ok(): break
         try:
-            r = S.get(url, headers=hdr(), timeout=8, allow_redirects=True)
+            r=S.get(url,headers=hdr(),timeout=7,allow_redirects=True)
             if r.status_code != 200 or not r.text:
-                stat("Search", f"{name}_{r.status_code}")
+                stat("Search",f"{name}_{r.status_code}")
                 continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            links = []
-            if name == "Bing":
-                links = [(clean(a.get_text(" ",strip=True)),a.get("href","")) for a in soup.select("li.b_algo h2 a[href]")]
-            elif name == "Google":
-                links = [(clean(a.get_text(" ",strip=True)),a.get("href","")) for a in soup.select("a[href]") if a.get("href","").startswith("http")]
+            soup=BeautifulSoup(r.text,"html.parser")
+            if name=="Bing":
+                links=[(clean(a.get_text(" ",strip=True)),a.get("href",""))
+                       for a in soup.select("li.b_algo h2 a[href]")]
             else:
-                links = [(clean(a.get_text(" ",strip=True)),a.get("href","")) for a in soup.select("a.result__a[href],a.result-link[href]")]
+                links=[(clean(a.get_text(" ",strip=True)),a.get("href",""))
+                       for a in soup.select("a.result__a[href],a.result-link[href]")]
             for title,u in links:
                 if not u.startswith("http") or not title: continue
-                u = u.split("#",1)[0]
+                u=u.split("#",1)[0]
                 if u in seen: continue
                 seen.add(u); merged.append((title,u))
-                if len(merged) >= limit: break
+                if len(merged)>=limit: break
         except requests.RequestException:
-            stat("Search", f"{name}_exception")
-    if merged: stat("Search","merged")
-    return merged[:limit]
+            stat("Search",f"{name}_exception")
+        if len(merged)>=limit: break
+
+    # Google is a fallback only when both primary indexes returned too little.
+    if len(merged) < min(5,limit) and budget_ok():
+        try:
+            url="https://www.google.com/search?q="+quote_plus(q)
+            r=S.get(url,headers=hdr(),timeout=7,allow_redirects=True)
+            if r.status_code==200 and r.text:
+                soup=BeautifulSoup(r.text,"html.parser")
+                for a in soup.select("a[href]"):
+                    u=a.get("href","")
+                    title=clean(a.get_text(" ",strip=True))
+                    if not u.startswith("http") or not title: continue
+                    u=u.split("#",1)[0]
+                    if u in seen: continue
+                    seen.add(u); merged.append((title,u))
+                    if len(merged)>=limit: break
+        except requests.RequestException:
+            stat("Search","Google_exception")
+
+    result=merged[:limit]
+    with SEARCH_CACHE_LOCK:
+        SEARCH_CACHE[key]=list(result)
+    if result: stat("Search","merged")
+    return result
 
 def parse_linkedin(html, remote, kind):
     soup = BeautifulSoup(html or "", "html.parser")
@@ -226,28 +256,43 @@ def parse_linkedin(html, remote, kind):
     return out
 
 def linkedin_query(keywords, location, remote, kind):
-    out=[]; start=0
-    while start <= 75 and budget_ok():
-        params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start={start}"
+    global LINKEDIN_API_DISABLED
+    out=[]
+    if not LINKEDIN_API_DISABLED and budget_ok():
+        params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start=0"
         if remote: params += "&f_WT=2"
-        h=fetch("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params,12,1)
-        if not h: break
-        found=parse_linkedin(h,remote,kind)
-        if not found: break
-        out.extend(found)
-        print(f"[LinkedIn page] {keywords} {kind} start={start} found={len(found)}",flush=True)
-        if len(found) < 10: break
-        start += 25
+        try:
+            h=fetch("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params,12,0)
+            if h:
+                found=parse_linkedin(h,remote,kind)
+                out.extend(found)
+                print(f"[LinkedIn page] {keywords} {kind} start=0 found={len(found)}",flush=True)
+            else:
+                with LINKEDIN_API_LOCK:
+                    LINKEDIN_API_DISABLED=True
+                print("[LinkedIn] API rate-limited/unavailable; switching remaining discovery to public indexes",flush=True)
+        except Exception:
+            with LINKEDIN_API_LOCK:
+                LINKEDIN_API_DISABLED=True
+
+    # Public indexes remain available even when LinkedIn's guest API rate-limits the runner.
+    if len(out)<5 and budget_ok():
+        q=f'site:linkedin.com/jobs/view "{keywords}" "{location}"'
+        for title,u in web_search(q,20):
+            if "/jobs/view/" not in u: continue
+            if not target(title): continue
+            parts=[clean(x) for x in re.split(r"\\s[|–—-]\\s*",title) if clean(x)]
+            company=parts[-1] if len(parts)>1 else "LinkedIn Employer"
+            out.append(make_job(parts[0] if parts else title,company,location,remote,"LinkedIn Search",u,"",title,kind))
     return out
 
 def linkedin():
     targets=[("WORLDWIDE_REMOTE","Remote / Worldwide",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca, Morocco",False)]
     tasks=[]
     for family,variants in SEARCHES:
-        queries=list(dict.fromkeys([f'"{variants[0]}"',f'"{variants[0]}" OR "{variants[1]}"']))
-        for q in queries:
-            for kind,loc,remote in targets:
-                tasks.append((family,q,kind,loc,remote))
+        q=f'"{variants[0]}" OR "{variants[1]}"'
+        for kind,loc,remote in targets:
+            tasks.append((family,q,kind,loc,remote))
     out=[];seen=set()
     def one(t):
         family,q,kind,loc,remote=t
@@ -260,7 +305,7 @@ def linkedin():
                 company=parts[-1] if len(parts)>1 else "LinkedIn Employer"
                 found.append(make_job(parts[0] if parts else title,company,loc,remote,"LinkedIn Search",u,"",title,kind))
         return found
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futures=[ex.submit(one,t) for t in tasks]
         for f in as_completed(futures):
             try:
@@ -272,43 +317,39 @@ def linkedin():
     return out
 
 def indeed():
-    """Do not hammer Indeed's 403-protected HTML from GitHub runners.
-    Recover Indeed vacancies through multiple public indexes instead."""
+    """Recover Indeed listings through public indexes without hammering 403-protected Indeed HTML."""
     targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
     tasks=[]
     for family,variants in SEARCHES:
+        seeds=" OR ".join(f'"{x}"' for x in variants[:3])
         for kind,loc,remote in targets:
-            for seed in dict.fromkeys(variants[:3]):
-                tasks.append((family,kind,loc,remote,seed))
-    out=[];seen=set()
+            tasks.append((family,kind,loc,remote,seeds))
+
+    out=[]; seen=set()
     def one(t):
-        family,kind,loc,remote,seed=t
+        family,kind,loc,remote,seeds=t
+        q=f'site:indeed.com/viewjob ({seeds}) "{loc}"'
         found=[]
-        queries=[
-            f'site:indeed.com/viewjob "{seed}" "{loc}"',
-            f'site:indeed.com/jobs/view "{seed}" "{loc}"',
-            f'site:indeed.com "{seed}" "{loc}" job',
-        ]
-        for q in queries:
-            if not budget_ok(): break
-            for title,u in web_search(q,25):
-                h=host(u)
-                if "indeed.com" not in h: continue
-                if "/viewjob" not in u and "/jobs/view" not in u: continue
-                if not target(title): continue
-                parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
-                jt=parts[0] if parts else clean(title)
-                company=parts[-1] if len(parts)>1 else "Indeed Employer"
-                found.append(make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind))
+        for title,u in web_search(q,30):
+            h=host(u)
+            if "indeed.com" not in h or ("/viewjob" not in u and "/jobs/view" not in u): continue
+            if not target(title): continue
+            parts=[clean(x) for x in re.split(r"\\s[|–—-]\\s*",title) if clean(x)]
+            jt=parts[0] if parts else clean(title)
+            company=parts[-1] if len(parts)>1 else "Indeed Employer"
+            found.append(make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind))
         return found
-    with ThreadPoolExecutor(max_workers=8) as ex:
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futures=[ex.submit(one,t) for t in tasks]
         for f in as_completed(futures):
             try:
                 for j in f.result():
-                    if j["id"] not in seen: seen.add(j["id"]);out.append(j)
+                    if j["id"] not in seen:
+                        seen.add(j["id"]); out.append(j)
             except Exception as e:
-                board_stat("Indeed","ERROR"); print(f"[Indeed ERROR] {e}",flush=True)
+                board_stat("Indeed","ERROR")
+                print(f"[Indeed ERROR] {e}",flush=True)
     board_stat("Indeed","INDEXED_FOUND",len(out))
     print(f"[Indeed] indexed total={len(out)}",flush=True)
     return out
@@ -337,8 +378,8 @@ def parse_search_jobs(items,kind,remote,board):
 def direct_himalayas(kind):
     out=[];seen=set(); board="Himalayas"
     for _,variants in SEARCHES:
-        for seed in dict.fromkeys(variants[:3]):
-            if not budget_ok(): return out
+        seed=" OR ".join(variants[:3])
+        if not budget_ok(): return out
             try:
                 r=S.get("https://himalayas.app/jobs/api/search",params={"q":seed,"sort":"recent","page":1},headers=hdr(),timeout=12)
                 if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
@@ -374,20 +415,18 @@ def direct_remotive(kind):
     board_stat(board,"FOUND",len(out)); return out
 
 def direct_board_search(board,domain,kind,remote):
-    if board == "Indeed": return []
-    seeds=[x for _,vs in SEARCHES for x in vs[:2]]
-    out=[];seen=set()
-    for seed in dict.fromkeys(seeds):
-        if not budget_ok(): break
-        q=f'site:{domain} "{seed}"'
-        if kind=="WORLDWIDE_REMOTE": q+=' (remote OR "work from home" OR worldwide)'
-        elif kind=="MOROCCO_REMOTE": q+=' (Morocco OR Maroc OR remote)'
-        else: q+=' (Casablanca OR "Casablanca, Morocco")'
-        items=web_search(q,20)
-        parsed=parse_search_jobs(items,kind,remote,board)
-        for j in parsed:
-            if j["id"] not in seen: seen.add(j["id"]);out.append(j)
-    board_stat(board,"FOUND",len(out)); return out
+    if board=="Indeed": return []
+    role_expr=" OR ".join(f'"{x}"' for _,vs in SEARCHES for x in vs[:2])
+    if kind=="WORLDWIDE_REMOTE":
+        place='(remote OR "work from home" OR worldwide)'
+    elif kind=="MOROCCO_REMOTE":
+        place='(Morocco OR Maroc OR remote)'
+    else:
+        place='(Casablanca OR "Casablanca, Morocco")'
+    q=f"site:{domain} ({role_expr}) {place}"
+    parsed=parse_search_jobs(web_search(q,30),kind,remote,board)
+    board_stat(board,"FOUND",len(parsed))
+    return parsed
 
 def public_web_jobs():
     targets=[("WORLDWIDE_REMOTE",True),("MOROCCO_REMOTE",True),("CASABLANCA_ONSITE",False)]
@@ -399,7 +438,7 @@ def public_web_jobs():
         for board,domain in JOB_BOARD_SEARCHES:
             tasks.append((board,lambda b=board,d=domain,k=kind,r=remote:direct_board_search(b,d,k,r)))
     out=[];seen=set()
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:
         futures={ex.submit(fn):name for name,fn in tasks}
         for f in as_completed(futures):
             name=futures[f]
@@ -409,35 +448,6 @@ def public_web_jobs():
             except Exception as e:
                 board_stat(name,"ERROR"); print(f"[BOARD ERROR] {name}: {e}",flush=True)
 
-    # Grouped index search adds jobs that direct adapters miss.
-    group_tasks=[]
-    groups=[JOB_BOARD_SEARCHES[i:i+6] for i in range(0,len(JOB_BOARD_SEARCHES),6)]
-    for family,variants in SEARCHES:
-        seeds=list(dict.fromkeys(variants[:2]))
-        role_expr=" OR ".join(f'"{x}"' for x in seeds)
-        for kind,remote in targets:
-            place='"remote worldwide"' if kind=="WORLDWIDE_REMOTE" else ('"remote Morocco"' if kind=="MOROCCO_REMOTE" else '"Casablanca Morocco"')
-            for group in groups:
-                group_tasks.append((family,kind,remote,role_expr,group,place))
-    def grouped(t):
-        family,kind,remote,role_expr,group,place=t
-        sites=" OR ".join("site:"+d for _,d in group)
-        items=web_search(f"({role_expr}) {place} ({sites})",30)
-        result=[]
-        board_map={base_domain(d):b for b,d in group}
-        for title,u in items:
-            b=board_map.get(base_domain(host(u)))
-            if not b: continue
-            result.extend(parse_search_jobs([(title,u)],kind,remote,b))
-        return result
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures=[ex.submit(grouped,t) for t in group_tasks]
-        for f in as_completed(futures):
-            try:
-                for j in f.result():
-                    if j["id"] not in seen: seen.add(j["id"]);out.append(j)
-            except Exception as e:
-                stat("Web","group_error")
     print(f"[Web + ALL BOARDS] total={len(out)}",flush=True)
     return out
 
