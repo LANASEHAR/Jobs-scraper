@@ -165,64 +165,123 @@ function companyMention_(company) {
   return c;
 }
 
+function extractOfferDetails_(description, role) {
+  const raw = String(description || "")
+    .replace(/\{[^}]{0,300}\}/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!raw) return [];
+
+  const roleWords = String(role || "")
+    .toLowerCase()
+    .split(/[^a-zäöüß0-9]+/i)
+    .filter(w => w.length >= 4);
+
+  const sentences = raw
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 45 && s.length <= 240);
+
+  const preferred = sentences
+    .map(s => {
+      const t = s.toLowerCase();
+      let score = 0;
+      if (/(aufgaben|verantwort|tätig|betreuung|kunden|gäste|service|organisation|koordination|verkauf|beratung|reservierung|buchung|rezeption|administration|disposition|aufträge|bestellungen|e-commerce|crm|hotellerie|gastronomie)/i.test(t)) score += 4;
+      roleWords.forEach(w => { if (t.indexOf(w) >= 0) score += 1; });
+      if (/gesucht|wir bieten|benefits|vergütung|gehalt|urlaub|bewerben|kontakt/i.test(t)) score -= 3;
+      return { s, score };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return preferred.slice(0, 2).map(x => {
+    let s = x.s.replace(/\s+/g, " ").trim();
+    if (s.length > 180) s = s.slice(0, 177).replace(/\s+\S*$/, "") + "...";
+    return s;
+  });
+}
+
+function naturalFit_(family, details) {
+  if (details.length) {
+    const first = details[0]
+      .replace(/^aufgaben[:\-]?\s*/i, "")
+      .replace(/^ihre aufgaben[:\-]?\s*/i, "")
+      .trim();
+    return "Besonders angesprochen hat mich, dass bei dieser Ausbildung " + first.charAt(0).toLowerCase() + first.slice(1);
+  }
+
+  const fallback = {
+    ausbildung_hotel: "Besonders passend finde ich die Verbindung aus Gästekontakt, Organisation und den internationalen Abläufen der Hotellerie.",
+    ausbildung_gastro: "Besonders passend finde ich die Verbindung aus Service, Gästekontakt und einem professionell organisierten Arbeitsalltag.",
+    ausbildung_retail: "Besonders passend finde ich die Verbindung aus Kundenberatung, Service und kaufmännischem Arbeiten.",
+    ausbildung_logistics: "Besonders passend finde ich die Verbindung aus Koordination, Kundenkontakt und strukturierten internationalen Abläufen.",
+    ausbildung_trade: "Besonders passend finde ich die Verbindung aus B2B-Kommunikation, kaufmännischer Arbeit und internationalem Geschäft.",
+    ausbildung_industry: "Besonders passend finde ich die Verbindung aus kaufmännischen Prozessen, Organisation und einem strukturierten Unternehmensumfeld.",
+    ausbildung_office: "Besonders passend finde ich die Verbindung aus Organisation, Kommunikation und kaufmännischen Aufgaben."
+  };
+  return fallback[family] || "Besonders angesprochen hat mich die Verbindung aus praktischer Verantwortung, Kundenorientierung und strukturiertem Arbeiten.";
+}
+
 function generateEmail_(job) {
   const company = companyMention_(job["Entreprise"]);
-  const role = String(job["Intitulé"] || job["Role Cible"] || "the position").trim();
+  const role = String(job["Intitulé"] || job["Role Cible"] || "Ausbildungsplatz").trim();
   const family = roleFamily_(job);
   const isAusbildung = /^ausbildung_/.test(family);
   const description = String(job["Description"] || "").trim();
   const fitReasons = String(job["Fit Reasons"] || "").trim();
   const location = String(job["Lieu"] || "").trim();
-  const foreignSignals = /ausland|ausländ|international|marokko|morocco|visa|visum|zav|einreise|unterkunft|wohnraum/i.test(description + " " + fitReasons);
 
   if (isAusbildung) {
-    const companyLine = company
-      ? "Ihre Ausschreibung für die Ausbildung zur/zum " + role + " bei " + company + " hat mich besonders angesprochen."
-      : "Ihre Ausschreibung für die Ausbildung zur/zum " + role + " hat mich besonders angesprochen.";
+    const details = extractOfferDetails_(description, role);
+    const companyIntro = company
+      ? "Ihre Ausschreibung für den Ausbildungsplatz als " + role + " bei " + company + " hat mich angesprochen."
+      : "Ihre Ausschreibung für den Ausbildungsplatz als " + role + " hat mich angesprochen.";
 
     let motivation = "";
     if (family === "ausbildung_hotel") {
-      motivation = "Durch meine Erfahrung bei der HBX Group / Hotelbeds kenne ich die internationale Hotellerie und die Zusammenarbeit mit Reise- und Hotelpartnern bereits aus der Praxis. Ich möchte diese Erfahrung nun gezielt in eine fundierte Ausbildung im Hotelbereich einbringen.";
+      motivation = "Durch meine Erfahrung bei der HBX Group / Hotelbeds kenne ich die internationale Hotellerie, die Zusammenarbeit mit Hotelpartnern und den Umgang mit internationalen Kunden bereits aus der Praxis. Genau diese Erfahrung möchte ich jetzt mit einer fundierten Ausbildung im Hotelbereich weiterentwickeln.";
     } else if (family === "ausbildung_gastro") {
-      motivation = "Meine bisherige Erfahrung in der internationalen Hotellerie hat mir gezeigt, wie wichtig Service, Organisation und ein professioneller Umgang mit unterschiedlichen Gästen sind. Genau diese Stärken möchte ich in einer Ausbildung im gastronomischen Bereich weiterentwickeln.";
+      motivation = "Meine Erfahrung in der internationalen Hotellerie hat mir gezeigt, wie wichtig Service, Organisation und ein sicherer Umgang mit unterschiedlichen Gästen sind. Diese Stärken möchte ich nun gezielt in einer Ausbildung im gastronomischen Bereich ausbauen.";
     } else if (family === "ausbildung_retail") {
-      motivation = "Ich bringe Erfahrung im Kundenkontakt, in der Beratung und in der täglichen Koordination von Anliegen mit. Besonders reizt mich an dieser Ausbildung die Verbindung aus Kundenorientierung, Organisation und kaufmännischem Arbeiten.";
+      motivation = "Ich bringe praktische Erfahrung im Kundenkontakt, in der Beratung und in der Bearbeitung von Kundenanliegen mit. Eine Ausbildung im Einzelhandel ist für mich deshalb ein sehr konkreter Schritt, um diese Erfahrung mit einer anerkannten kaufmännischen Qualifikation zu verbinden.";
     } else if (family === "ausbildung_logistics") {
-      motivation = "Aus meiner bisherigen Arbeit kenne ich internationale Kundenbetreuung, Auftragskoordination, Lieferabläufe und die Zusammenarbeit mit verschiedenen Geschäftspartnern. Diese praktische Erfahrung möchte ich nun systematisch durch eine Ausbildung im Speditions- und Logistikbereich vertiefen.";
+      motivation = "Aus meiner bisherigen Arbeit kenne ich Kundenbetreuung, Auftragskoordination und internationale Abläufe. Diese Erfahrung möchte ich nun systematisch durch eine Ausbildung im Speditions- und Logistikbereich vertiefen.";
     } else if (family === "ausbildung_trade") {
-      motivation = "Mein bisheriger Weg verbindet internationale Kundenbetreuung, B2B-Kommunikation und kaufmännische Koordination. Deshalb sehe ich in dieser Ausbildung eine sehr passende Möglichkeit, meine praktische Erfahrung mit einer anerkannten kaufmännischen Qualifikation zu verbinden.";
+      motivation = "Mein bisheriger Weg verbindet internationale Kundenbetreuung, B2B-Kommunikation und kaufmännische Koordination. Deshalb passt eine Ausbildung im Handelsbereich sehr gut zu meiner bisherigen Erfahrung und meinem nächsten beruflichen Schritt.";
     } else if (family === "ausbildung_industry") {
-      motivation = "Ich bringe eine kaufmännische und internationale Arbeitsweise, Erfahrung im Kundenmanagement sowie in der Koordination von Geschäftsvorgängen mit. Die Ausbildung bietet mir die Möglichkeit, diese Erfahrung in einem strukturierten industriellen Umfeld weiter auszubauen.";
+      motivation = "Ich bringe eine kaufmännische Arbeitsweise, Erfahrung im Kundenmanagement und in der Koordination von Geschäftsvorgängen mit. Diese praktische Grundlage möchte ich in einer strukturierten kaufmännischen Ausbildung im industriellen Umfeld weiter ausbauen.";
     } else {
-      motivation = "Ich bringe praktische Erfahrung in Kundenbetreuung, B2B-Kommunikation, Administration und operativer Koordination mit. Eine Ausbildung ist für mich der bewusste nächste Schritt, um diese Erfahrung mit einer soliden beruflichen Qualifikation in Deutschland zu verbinden.";
+      motivation = "Ich bringe Erfahrung in Kundenbetreuung, B2B-Kommunikation, Administration und operativer Koordination mit. Eine Ausbildung ist für mich der bewusste nächste Schritt, um diese praktische Erfahrung mit einer soliden beruflichen Qualifikation in Deutschland zu verbinden.";
     }
 
     const context = (fitReasons + " " + description).toLowerCase();
-    const fit = [];
-    if (/600/.test(context)) fit.push("die Betreuung eines großen internationalen Kundenportfolios");
-    if (/b2b/.test(context)) fit.push("meine B2B-Erfahrung");
-    if (/hotel|hospitality|tourism|reise/.test(context)) fit.push("meine Erfahrung in der internationalen Hotellerie und Reisebranche");
-    if (/customer|kunden|service|gast/.test(context)) fit.push("meine ausgeprägte Kunden- und Serviceorientierung");
-    if (/logistik|spedition|liefer|warehouse|transport/.test(context)) fit.push("meine Erfahrung mit Koordination und internationalen Abläufen");
-    if (/kaufm|commercial|sales|handel/.test(context)) fit.push("mein kaufmännisches und vertriebliches Verständnis");
+    const proof = [];
+    if (/hotel|hospitality|tourism|reise/.test(context)) proof.push("meine Erfahrung in der internationalen Hotellerie und Reisebranche");
+    if (/b2b/.test(context)) proof.push("meine B2B-Erfahrung");
+    if (/customer|kunden|service|gast/.test(context)) proof.push("meine Kunden- und Serviceorientierung");
+    if (/logistik|spedition|liefer|transport|disposition/.test(context)) proof.push("meine Erfahrung mit Koordination und internationalen Abläufen");
+    if (/kaufm|commercial|sales|handel|e-commerce/.test(context)) proof.push("mein kaufmännisches und vertriebliches Verständnis");
 
-    const fitSentence = fit.length
-      ? "Für die Position bringe ich insbesondere " + fit.slice(0, 3).join(", ") + " mit."
-      : "Ich bin überzeugt, dass meine bisherige praktische Erfahrung und meine schnelle Auffassungsgabe eine gute Grundlage für diese Ausbildung bilden.";
+    const proofSentence = proof.length
+      ? "Für die Aufgaben bringe ich insbesondere " + proof.slice(0, 2).join(" und ") + " mit."
+      : "Ich bin überzeugt, dass meine praktische Erfahrung und meine schnelle Auffassungsgabe eine gute Grundlage für diese Ausbildung bilden.";
 
-    const relocation = foreignSignals
-      ? "Da ich mich derzeit aus Marokko bewerbe und die Ausschreibung internationale Bewerber berücksichtigt, möchte ich außerdem betonen, dass ich die notwendigen Schritte für Visum, Einreise, Unterlagen und meine persönliche Organisation selbstständig vorbereite und koordiniere."
-      : "Da ich mich derzeit aus Marokko bewerbe, kümmere ich mich selbstständig um die notwendigen Schritte für Visum, Einreise, Unterlagen und meine persönliche Organisation. Von Ihrer Seite ist daher keine besondere organisatorische Betreuung meinerseits erforderlich.";
+    const fitSentence = naturalFit_(family, details);
+    const locationSentence = location
+      ? "Auch der Ausbildungsstandort " + location + " kommt für mich sehr gut infrage."
+      : "";
 
-    const localDetail = location ? "Der Ausbildungsstandort " + location + " passt für mich ebenfalls sehr gut." : "";
+    const relocation = "Da ich mich derzeit aus Marokko bewerbe, organisiere ich Visum, Einreise, Unterlagen und meine persönliche Anreise selbstständig.";
 
     const body =
       "Sehr geehrte Damen und Herren,\n\n" +
-      companyLine + "\n\n" +
+      companyIntro + "\n\n" +
       motivation + "\n\n" +
-      fitSentence + (localDetail ? " " + localDetail : "") + "\n\n" +
-      relocation + "\n\n" +
-      "Ich freue mich sehr über die Möglichkeit, mich persönlich vorzustellen. Meine Unterlagen finden Sie im Anhang.\n\n" +
+      fitSentence + ". " + proofSentence + (locationSentence ? " " + locationSentence : "") + "\n\n" +
+      relocation + " Für Sie entsteht dadurch kein zusätzlicher organisatorischer Aufwand.\n\n" +
+      "Ich freue mich, mich persönlich vorzustellen und Sie von meiner Motivation zu überzeugen. Meine Unterlagen finden Sie im Anhang.\n\n" +
       "Mit freundlichen Grüßen\n" +
       CONFIG.NAME + "\n" +
       CONFIG.EMAIL + "\n" +
@@ -239,10 +298,11 @@ function generateEmail_(job) {
     : "I’m reaching out regarding the " + role + " opportunity.";
 
   let proof = "";
+  const family = roleFamily_(job);
   if (String(job["Spontaneous"] || "").toUpperCase() === "YES") {
     proof = "My background combines B2B account management, customer success, commercial administration, operations and international client support. At HBX Group, I managed 600+ B2B travel-agency accounts, while my more recent experience also includes logistics, e-commerce and administrative coordination.";
   } else if (family === "customer_success" || family === "travel") {
-    proof = "At HBX Group (Hotelbeds / Bedsonline), I managed a portfolio of 600+ B2B travel-agency accounts across the Middle East, handling onboarding, training, customer support, retention and growth in Arabic, French and English.";
+    proof = "At HBX Group (Hotelbeds / Bedsonline), I managed a portfolio of 600+ B2B travel-agency accounts, handling onboarding, training, customer support, retention and growth in Arabic, French and English.";
   } else if (family === "account") {
     proof = "At HBX Group (Hotelbeds / Bedsonline), I managed 600+ B2B travel-agency accounts, developed client relationships, supported onboarding and identified retention, upselling and growth opportunities across an international portfolio.";
   } else if (family === "partnerships") {
@@ -274,6 +334,7 @@ function generateEmail_(job) {
     body: body
   };
 }
+
 function sendOne_(sheet, rowNumber, headers, job, cvFile) {
   const email = firstEmail_(job["Emails RH"]);
   if (!email) return false;
