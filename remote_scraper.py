@@ -59,6 +59,28 @@ JOB_BOARD_SEARCHES = [
     ("Working Nomads","workingnomads.com"),("Remote OK","remoteok.com"),
     ("TopCSJobs","topcsjobs.com"),("Support Driven","supportdriven.com"),
 ]
+
+// Native board crawling: each board is treated as its own source.
+// APIs/RSS/sitemaps/search forms are preferred; public search indexes are fallback only.
+NATIVE_BOARD_CONFIG = {
+    "Emploi.ma": {"domain":"emploi.ma","start":"https://www.emploi.ma/"},
+    "ReKrute": {"domain":"rekrute.com","start":"https://www.rekrute.com/"},
+    "Bayt": {"domain":"bayt.com","start":"https://www.bayt.com/"},
+    "Novojob": {"domain":"novojob.com","start":"https://www.novojob.com/"},
+    "Optioncarriere": {"domain":"optioncarriere.ma","start":"https://www.optioncarriere.ma/"},
+    "Glassdoor": {"domain":"glassdoor.com","start":"https://www.glassdoor.com/"},
+    "Welcome to the Jungle": {"domain":"welcometothejungle.com","start":"https://www.welcometothejungle.com/"},
+    "Wellfound": {"domain":"wellfound.com","start":"https://wellfound.com/jobs"},
+    "We Work Remotely": {"domain":"weworkremotely.com","start":"https://weworkremotely.com/"},
+    "Jobgether": {"domain":"jobgether.com","start":"https://jobgether.com/"},
+    "Working Nomads": {"domain":"workingnomads.com","start":"https://www.workingnomads.com/jobs"},
+    "Remote OK": {"domain":"remoteok.com","start":"https://remoteok.com/"},
+    "TopCSJobs": {"domain":"topcsjobs.com","start":"https://topcsjobs.com/"},
+    "Support Driven": {"domain":"supportdriven.com","start":"https://jobs.supportdriven.com/"},
+}
+NATIVE_MAX_SITEMAPS = 10
+NATIVE_MAX_URLS_PER_BOARD = 220
+NATIVE_MAX_DETAIL_PER_BOARD = 100
 SOURCE_STATS = {}
 BOARD_STATS = {}
 NO_EMAIL_BUFFER = []
@@ -417,8 +439,156 @@ def direct_remotive(kind):
             board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
     board_stat(board,"FOUND",len(out)); return out
 
+def same_board(url, domain):
+    h=host(url)
+    return h==domain or h.endswith("." + domain)
+
+def discover_sitemaps(start):
+    urls=[]
+    robots=fetch(urljoin(start,"/robots.txt"),8,0) or ""
+    for line in robots.splitlines():
+        if line.lower().startswith("sitemap:"):
+            urls.append(line.split(":",1)[1].strip())
+    urls += [urljoin(start,"/sitemap.xml"),urljoin(start,"/sitemap_index.xml")]
+    return list(dict.fromkeys(urls))[:NATIVE_MAX_SITEMAPS]
+
+def sitemap_links(xml):
+    if not xml: return []
+    soup=BeautifulSoup(xml,"xml")
+    return [clean(x.get_text()) for x in soup.find_all("loc") if clean(x.get_text())]
+
+def native_board_urls(board):
+    cfg=NATIVE_BOARD_CONFIG.get(board)
+    if not cfg: return []
+    start=cfg["start"]; domain=cfg["domain"]; urls=[]
+
+    # 1. robots/sitemap discovery: direct board-owned URLs.
+    for sm in discover_sitemaps(start):
+        xml=fetch(sm,12,0)
+        links=sitemap_links(xml)
+        for link in list(links):
+            if link.endswith(".xml") and len(links)<NATIVE_MAX_URLS_PER_BOARD:
+                sub=fetch(link,12,0)
+                links += sitemap_links(sub)
+        urls.extend([u for u in links if same_board(u,domain)])
+        if len(urls)>=NATIVE_MAX_URLS_PER_BOARD: break
+
+    # 2. Board-native GET search forms where exposed.
+    home=fetch(start,12,0) or ""
+    if home:
+        soup=BeautifulSoup(home,"html.parser")
+        for form in soup.find_all("form"):
+            method=(form.get("method") or "get").lower()
+            action=urljoin(start,form.get("action") or start)
+            if method!="get" or not same_board(action,domain): continue
+            inputs=[(x.get("name") or "",x.get("value") or "") for x in form.find_all("input")]
+            names=[x[0].lower() for x in inputs]
+            qname=next((x[0] for x in inputs if any(k in x[0].lower() for k in
+                ("search","keyword","query","q","title","poste","metier","job"))),None)
+            locname=next((x[0] for x in inputs if any(k in x[0].lower() for k in
+                ("location","lieu","ville","city","country","pays"))),None)
+            if not qname: continue
+            for term in VARIANTS[:8]:
+                params={qname:term}
+                if locname: params[locname]="Morocco"
+                try:
+                    r=S.get(action,params=params,headers=hdr(),timeout=12,allow_redirects=True)
+                    if r.status_code==200 and r.text:
+                        ps=BeautifulSoup(r.text,"html.parser")
+                        for a in ps.find_all("a",href=True):
+                            u=urljoin(r.url,a["href"]).split("#",1)[0]
+                            if same_board(u,domain): urls.append(u)
+                except requests.RequestException:
+                    pass
+                if len(urls)>=NATIVE_MAX_URLS_PER_BOARD: break
+            if len(urls)>=NATIVE_MAX_URLS_PER_BOARD: break
+
+    keywords=("job","jobs","career","careers","emploi","offre","recrut","position",
+              "opening","apply","remote","customer-success","account","sales","support",
+              "operations","ecommerce")
+    unique=list(dict.fromkeys(urls))
+    unique.sort(key=lambda u:(-sum(k in u.lower() for k in keywords),len(u)))
+    return unique[:NATIVE_MAX_URLS_PER_BOARD]
+
+def native_job_from_page(url,board,kind,remote):
+    html=fetch(url,12,0)
+    if not html: return None
+    soup=BeautifulSoup(html,"html.parser")
+    title=clean((soup.find("h1") or soup.title).get_text(" ",strip=True) if (soup.find("h1") or soup.title) else "")
+    text=clean(soup.get_text(" ",strip=True))
+    if not title or not accept_job(title,text): return None
+
+    company=""
+    for sel in ("[class*=company]","[class*=employer]","[class*=entreprise]",
+                "[class*=recruiter]","[class*=organization]"):
+        node=soup.select_one(sel)
+        if node:
+            company=clean(node.get_text(" ",strip=True))
+            if company and len(company)<160: break
+
+    location=""
+    for sel in ("[class*=location]","[class*=lieu]","[class*=city]",
+                "[class*=ville]","[class*=country]"):
+        node=soup.select_one(sel)
+        if node:
+            location=clean(node.get_text(" ",strip=True))
+            if location and len(location)<160: break
+
+    age=""
+    time_node=soup.find("time")
+    if time_node: age=clean(time_node.get_text(" ",strip=True))
+
+    # Never fabricate the company from the domain when the page does not expose it.
+    return make_job(
+        title, company, location or ("Remote / Worldwide" if remote else
+        ("Casablanca, Morocco" if kind=="CASABLANCA_ONSITE" else "Morocco")),
+        remote, board, url, age, text[:12000], kind
+    )
+
+def native_board_search(board,kind,remote):
+    if board not in NATIVE_BOARD_CONFIG: return []
+    out=[];seen=set()
+    try:
+        urls=native_board_urls(board)
+        print(f"[NATIVE {board}] candidate_urls={len(urls)}",flush=True)
+        for u in urls:
+            if len(out)>=NATIVE_MAX_DETAIL_PER_BOARD: break
+            if u in seen: continue
+            seen.add(u)
+            j=native_job_from_page(u,board,kind,remote)
+            if not j: continue
+            if j["id"] in {x["id"] for x in out}: continue
+            if not fresh_window(j.get("posted_age","")): continue
+            out.append(j)
+        board_stat(board,"NATIVE_FOUND",len(out))
+        print(f"[NATIVE {board}] found={len(out)}",flush=True)
+    except Exception as e:
+        board_stat(board,"NATIVE_ERROR")
+        print(f"[NATIVE {board} ERROR] {e}",flush=True)
+    return out
+
+
 def direct_board_search(board,domain,kind,remote):
-    if board=="Indeed": return []
+    # Native source first: APIs/sitemaps/forms/detail pages.
+    native=native_board_search(board,kind,remote)
+    if native:
+        # Still use the public index to catch listings omitted by the native crawl.
+        fallback=[]
+        role_expr=" OR ".join(f'"{x}"' for _,vs in SEARCHES for x in vs[:2])
+        if kind=="WORLDWIDE_REMOTE":
+            place='(remote OR "work from home" OR worldwide)'
+        elif kind=="MOROCCO_REMOTE":
+            place='(Morocco OR Maroc OR remote)'
+        else:
+            place='(Casablanca OR "Casablanca, Morocco")'
+        q=f"site:{domain} ({role_expr}) {place}"
+        fallback=parse_search_jobs(web_search(q,20),kind,remote,board)
+        merged={j["id"]:j for j in native}
+        for j in fallback: merged.setdefault(j["id"],j)
+        board_stat(board,"FALLBACK_FOUND",len(fallback))
+        return list(merged.values())
+
+    # If native access is unavailable, do not lose the board entirely.
     role_expr=" OR ".join(f'"{x}"' for _,vs in SEARCHES for x in vs[:2])
     if kind=="WORLDWIDE_REMOTE":
         place='(remote OR "work from home" OR worldwide)'
@@ -428,7 +598,7 @@ def direct_board_search(board,domain,kind,remote):
         place='(Casablanca OR "Casablanca, Morocco")'
     q=f"site:{domain} ({role_expr}) {place}"
     parsed=parse_search_jobs(web_search(q,30),kind,remote,board)
-    board_stat(board,"FOUND",len(parsed))
+    board_stat(board,"INDEX_FALLBACK_FOUND",len(parsed))
     return parsed
 
 def public_web_jobs():
