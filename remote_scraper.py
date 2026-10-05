@@ -222,22 +222,33 @@ def linkedin_web_fallback(keywords,location,remote,search_type):
 
 def linkedin():
     targets=[("WORLDWIDE_REMOTE","Remote / Worldwide",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca, Morocco",False)]
-    all_out=[];seen=set()
+    tasks=[]
     for family,variants in SEARCHES:
-        keyword_queries=[
-          f'"{variants[0]}"',
-          f'"{variants[0]}" OR "{variants[1]}"' if len(variants)>1 else f'"{variants[0]}"'
-        ]
-        for keyword_query in keyword_queries:
+        queries=list(dict.fromkeys([f'"{variants[0]}"', f'"{variants[0]}" OR "{variants[1]}"']))
+        for q in queries:
             for st,loc,remote in targets:
-                print(f"[LinkedIn] {family} :: keywords={keyword_query} | {st}",flush=True)
-                found=linkedin_guest_search(keyword_query,loc,remote,st)
-                if len(found)<3:found+=linkedin_web_fallback(keyword_query,loc,remote,st)
-                send_progressive(found, f"LinkedIn {family} {st}")
+                tasks.append((family,q,st,loc,remote))
+    all_out=[];seen=set()
+    def one(task):
+        family,q,st,loc,remote=task
+        print(f"[LinkedIn] {family} :: keywords={q} | {st}",flush=True)
+        found=linkedin_guest_search(q,loc,remote,st)
+        if len(found)<3:
+            found+=linkedin_web_fallback(q,loc,remote,st)
+        return found
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures=[ex.submit(one,t) for t in tasks]
+        for fut in as_completed(futures):
+            try:
+                found=fut.result()
                 for j in found:
-                    if j["id"] not in seen:seen.add(j["id"]);all_out.append(j)
-                time.sleep(2+random.random())
-    print(f"[LinkedIn] total={len(all_out)}",flush=True);return all_out
+                    if j["id"] not in seen:
+                        seen.add(j["id"]);all_out.append(j)
+            except Exception as e:
+                stat("LinkedIn","errors");print(f"[LinkedIn TASK ERROR] {e}",flush=True)
+    print(f"[LinkedIn] total={len(all_out)}",flush=True)
+    return all_out
+
 
 def parse_indeed(html,kind,remote):
     soup=BeautifulSoup(html or "","html.parser");out=[];seen=set()
@@ -254,66 +265,100 @@ def parse_indeed(html,kind,remote):
     return out
 
 def indeed():
-    """Use indexed Indeed discovery only; never spend minutes on a blocked direct Indeed page."""
-    out=[];seen=set();targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
+    """Indeed-safe discovery.
+
+    Indeed frequently returns 403 to GitHub-hosted runners. We do NOT hammer the
+    blocked endpoint. Instead we query multiple public indexes for fresh Indeed
+    vacancy URLs, and a failure on Indeed is isolated from every other board.
+    """
+    targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
+    tasks=[]
     for family,variants in SEARCHES:
-        keyword=variants[0]
+        seeds=list(dict.fromkeys(variants[:3]))
         for kind,loc,remote in targets:
-            found=[]
-            q=f'site:indeed.com/viewjob "{keyword}" "{loc}"'
-            for title,u in web_search(q,20):
+            for seed in seeds:
+                tasks.append((family,kind,loc,remote,seed))
+    out=[];seen=set()
+    def one(task):
+        family,kind,loc,remote,seed=task
+        queries=[
+            f'site:indeed.com/viewjob "{seed}" "{loc}"',
+            f'site:indeed.com/jobs/view "{seed}" "{loc}"',
+            f'site:indeed.com "{seed}" "{loc}" "job"',
+        ]
+        found=[]
+        for q in queries:
+            for title,u in web_search(q,25):
                 host=urlparse(u).netloc.lower()
                 if "indeed.com" not in host: continue
                 if not target(title): continue
-                company=clean(title.split(" | ")[1]) if " | " in title else "Indeed Employer"
-                found.append(job(title.split(" | ")[0],company,loc,remote,"Indeed Search",u,"","",kind))
-            send_progressive(found, f"Indeed {family} {kind}")
-            for j in found:
-                if j["id"] not in seen:seen.add(j["id"]);out.append(j)
-    print(f"[Indeed] total={len(out)}",flush=True);return out
+                clean_url=u.split("?")[0].split("#")[0]
+                if "/viewjob" not in clean_url and "/jobs/view" not in clean_url: continue
+                pieces=[clean(x) for x in re.split(r'\s[|–—-]\s*',title) if clean(x)]
+                jt=pieces[0] if pieces else clean(title)
+                company=pieces[-1] if len(pieces)>=2 else "Indeed Employer"
+                found.append(job(jt,company,loc,remote,"Indeed",clean_url,"",title,kind))
+        return found
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures=[ex.submit(one,t) for t in tasks]
+        for fut in as_completed(futures):
+            try:
+                for j in fut.result():
+                    if j["id"] not in seen:
+                        seen.add(j["id"]);out.append(j)
+            except Exception as e:
+                board_stat("Indeed","ERROR");print(f"[Indeed TASK ERROR] {e}",flush=True)
+    board_stat("Indeed","FOUND",len(out))
+    print(f"[Indeed] indexed discovery total={len(out)}",flush=True)
+    return out
+
+
 def _base_domain(host):
     host=host.lower().replace("https://","").replace("http://","").replace("www.","").split("/")[0].split(":")[0]
     parts=host.split(".")
     return ".".join(parts[-2:]) if len(parts)>=2 else host
 
 def parse_web_jobs(items,kind,remote,role_expression=""):
-    """Parse job-board/search results without requiring the exact role phrase in
-    the result title. Search engines often return company/job pages whose title
-    omits the keyword even though the indexed page is the requested vacancy."""
-    out=[];domains=set(_base_domain(d) for d in SEARCH_DOMAINS)
+    """Convert indexed board results into jobs without requiring fragile title parsing."""
+    out=[];seen=set()
     role_terms=[clean(x).lower() for x in re.findall(r'"([^"]+)"',role_expression)] if role_expression else []
+    domains=set(_base_domain(d) for d in SEARCH_DOMAINS)
     for title,url in items:
         host=urlparse(url).netloc.lower().replace("www.","")
         if _base_domain(host) not in domains: continue
-        low=(title+" "+url).lower()
-        # Keep obvious job pages, career pages and board URLs; reject generic
-        # corporate pages unless the query itself supplied a role match.
-        jobish=any(x in low for x in ("job","jobs","career","careers","vacan","stellen","emploi","recrut","position","opening","apply"))
+        low=(clean(title)+" "+url).lower()
+        jobish=any(x in low for x in ("job","jobs","career","careers","vacan","stellen","emploi","recrut","position","opening","apply","viewjob"))
         role_match=any(x in low for x in role_terms) or any(x.lower() in low for x in VARIANTS)
         if not jobish and not role_match: continue
         if not target(title): continue
         company=""
         patterns=[
-          r'\s(?:at|chez|@)\s+([^|–—\-]+)
+            r'\s(?:at|chez|@)\s+([^|–—\-]+)',
+            r'\s[|–—-]\s*([^|–—-]+)$'
+        ]
+        for p in patterns:
+            m=re.search(p,title,re.I)
+            if m:
+                company=clean(m.group(1))
+                break
+        if not company:
+            parts=[clean(x) for x in re.split(r'\s[|–—-]\s*',title) if clean(x)]
+            if len(parts)>=2:
+                company=parts[-1]
+        if not company:
+            company=host.split(".")[0].replace("-"," ").title()
+        url=url.split("#",1)[0]
+        if url in seen: continue
+        seen.add(url)
+        out.append(job(clean(title),company,
+                       "Remote / Worldwide" if remote else ("Casablanca, Morocco" if kind=="CASABLANCA_ONSITE" else "Morocco"),
+                       remote,host,url,"",clean(title),kind))
+    return out
 
 
 def spontaneous_casablanca():
-    """After job discovery, search Casablanca companies that may fit the profile even without an advertised vacancy."""
-    roles=[
-      "customer success manager",
-      "account manager",
-      "key account manager",
-      "sales administrator",
-      "administration des ventes",
-      "executive assistant",
-      "assistante de direction",
-      "assistante administrative",
-      "office manager",
-      "business operations",
-      "commercial coordinator",
-      "travel account manager"
-    ]
-    company_queries=[
+    """Discover Casablanca companies without performing expensive enrichment here."""
+    queries=[
       '"multinationale" Casablanca recrutement',
       '"multinational" Casablanca Morocco careers',
       '"international company" Casablanca Morocco careers',
@@ -326,50 +371,25 @@ def spontaneous_casablanca():
       '"FMCG" Casablanca Morocco company careers'
     ]
     companies={}
-    for q in company_queries:
+    for q in queries:
         for title,u in web_search(q,20):
-            host=urlparse(u).netloc.lower().replace("www.","")
-            if not host or any(host==b or host.endswith("."+b) for b in BLOCKED): continue
-            # Prefer actual company/career/contact pages over job-board pages.
-            if any(x in host for x in ["linkedin","indeed","glassdoor","bayt","rekrute","emploi.ma","novojob"]): continue
+            h=_host(u)
+            if _bad_domain(u) or any(x in h for x in ("linkedin","indeed","glassdoor","bayt","rekrute","emploi.ma","novojob","optioncarriere")):
+                continue
             name=clean(re.sub(r"\s*[-|–]\s*(careers|jobs|recruitment|casablanca).*$","",title,flags=re.I))
-            if len(name)<2: name=host.split(".")[0].replace("-"," ").title()
-            key=host
-            companies[key]={"name":name,"site":"https://"+host}
-        time.sleep(.5)
+            if len(name)<2: name=h.split(".")[0].replace("-"," ").title()
+            companies[h]={"name":name,"site":"https://"+h}
     out=[]
-    seen=set()
-    for domain,info in companies.items():
-        role="Customer Success / Account Management / Sales Administration / Executive Support"
-        j=job(
-              role,
-              info["name"],
-              "Casablanca, Morocco",
-              False,
-              "Spontaneous Company Search",
-              info["site"],
-              "",
-              "Potential fit — no vacancy required",
-              "CASABLANCA_SPONTANEOUS"
-            )
-        j["company_site"]=info["site"]
-        j["spontaneous"]="YES"
-        # enrich() will verify the public company email before writing it.
-        try:
-            u=enrich(j); j.update(u)
-            if j.get("email_status")=="FOUND" and j.get("emails_rh"):
-                key=domain+"|"+j["emails_rh"]
-                if key not in seen:
-                    seen.add(key); out.append(j)
-                    print(f"[SPONTANEOUS EMAIL] {info['name']} -> {j['emails_rh']}",flush=True)
-        except Exception as e:
-            print(f"[SPONTANEOUS ERROR] {info['name']}: {e}",flush=True)
-        time.sleep(.3)
+    for h,info in companies.items():
+        j=job("Customer Success / Account Management / Sales Administration / Executive Support",
+              info["name"],"Casablanca, Morocco",False,"Spontaneous Company Search",
+              info["site"],"","Potential fit — spontaneous application","CASABLANCA_SPONTANEOUS")
+        j["company_site"]=info["site"];j["spontaneous"]="YES"
+        out.append(j)
+    print(f"[SPONTANEOUS] companies discovered: {len(out)}",flush=True)
     return out
 
 
-# Every board is searched explicitly. Search-engine discovery remains a
-# supplementary layer, never the only way a board is searched.
 JOB_BOARD_SEARCHES = [
     ("Indeed", "indeed.com"),
     ("Emploi.ma", "emploi.ma"),
@@ -511,24 +531,38 @@ def _direct_jsonld_board(board,domain,kind,remote):
         board_stat(board,"ERROR"); return []
 
 def direct_board_discovery():
-    out=[];seen=set()
+    """Run board adapters concurrently so one slow/blocked board cannot serialize the run."""
+    jobs=[]
+    tasks=[]
     for kind,_,remote in [("WORLDWIDE_REMOTE","remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]:
-        candidates=[]
         if remote:
-            candidates += _direct_himalayas(kind)
-            candidates += _direct_remotive(kind)
+            tasks.append(("Himalayas",lambda k=kind:_direct_himalayas(k)))
+            tasks.append(("Remotive",lambda k=kind:_direct_remotive(k)))
         for board,domain in JOB_BOARD_SEARCHES:
-            candidates += _direct_jsonld_board(board,domain,kind,remote)
-        for j in candidates:
-            if j["id"] not in seen: seen.add(j["id"]); out.append(j)
+            if board=="Indeed":
+                # Indeed blocks hosted runners; its indexed adapter is used instead.
+                board_stat(board,"SKIPPED_DIRECT_403_GUARD")
+                continue
+            tasks.append((board,lambda b=board,d=domain,k=kind,r=remote:_direct_jsonld_board(b,d,k,r)))
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        future_map={ex.submit(fn):name for name,fn in tasks}
+        for fut in as_completed(future_map):
+            name=future_map[fut]
+            try:
+                jobs.extend(fut.result() or [])
+            except Exception as e:
+                board_stat(name,"ERROR");print(f"[BOARD TASK ERROR] {name}: {e}",flush=True)
+    out=[];seen=set()
+    for j in jobs:
+        if j["id"] not in seen:
+            seen.add(j["id"]);out.append(j)
     for board,stats in BOARD_DIRECT_STATS.items():
         print(f"[BOARD STATUS] {board}: {stats}",flush=True)
     return out
 
+
 def public_web_jobs():
-    """High-coverage board discovery with grouped search queries.
-    Search engines are used as the index, but results are accepted from the
-    configured job boards even when the result title is not role-shaped."""
+    """High-coverage board discovery with concurrent direct adapters and indexed search."""
     out=[];seen=set()
     for j in direct_board_discovery():
         if j["id"] not in seen: seen.add(j["id"]); out.append(j)
@@ -537,31 +571,38 @@ def public_web_jobs():
       ("MOROCCO_REMOTE","Morocco remote",True),
       ("CASABLANCA_ONSITE","Casablanca Morocco",False)
     ]
-    # Group boards to avoid hundreds of near-identical search-engine requests.
     groups=[JOB_BOARD_SEARCHES[i:i+6] for i in range(0,len(JOB_BOARD_SEARCHES),6)]
     board_map={_base_domain(d):(b,d) for b,d in JOB_BOARD_SEARCHES}
-
+    tasks=[]
     for family,variants in SEARCHES:
         seeds=list(dict.fromkeys(variants[:2]))
         role_expr=" OR ".join(f'"{x}"' for x in seeds)
         for kind,place,remote in target_sets:
             for group in groups:
-                sites=" OR ".join(f'site:{d}' for _,d in group)
-                q=f'({role_expr}) {place} ({sites})'
-                items=web_search(q,30)
-                parsed=parse_web_jobs(items,kind,remote,role_expr)
+                tasks.append((family,kind,place,remote,group,role_expr))
+    def one(task):
+        family,kind,place,remote,group,role_expr=task
+        sites=" OR ".join(f'site:{d}' for _,d in group)
+        q=f'({role_expr}) {place} ({sites})'
+        items=web_search(q,30)
+        return family,kind,items,parse_web_jobs(items,kind,remote,role_expr),group
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures=[ex.submit(one,t) for t in tasks]
+        for fut in as_completed(futures):
+            try:
+                family,kind,items,parsed,group=fut.result()
                 for j in parsed:
                     host=urlparse(j.get("lien","")).netloc.lower().replace("www.","")
                     base=_base_domain(host)
                     if base not in board_map: continue
                     if j["id"] in seen: continue
-                    seen.add(j["id"])
-                    j["source"]=board_map[base][0]
-                    out.append(j)
+                    seen.add(j["id"]);j["source"]=board_map[base][0];out.append(j)
                 print(f"[BOARD GROUP] {family} {kind} group={len(group)} results={len(parsed)}",flush=True)
-
+            except Exception as e:
+                stat("Web","errors");print(f"[BOARD GROUP ERROR] {e}",flush=True)
     print(f"[Web + ALL BOARDS] total={len(out)}",flush=True)
     return out
+
 
 def company_site(company):
     """Resolve the employer's official domain independently of the job portal."""
@@ -739,7 +780,11 @@ def scrape():
     if not WEBHOOK:raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
     print(f"[START] {len(SEARCHES)} role families; freshness window=72h; EMAIL-FIRST=ON",flush=True)
     seen=set();email_found=0;source_totals={}
-    for source_name,fn in [("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]:
+    source_functions=[("LinkedIn",linkedin),("Indeed",indeed),("Web",public_web_jobs)]
+    with ThreadPoolExecutor(max_workers=3) as source_pool:
+        source_futures={source_pool.submit(fn):name for name,fn in source_functions}
+        for source_future in as_completed(source_futures):
+            source_name=source_futures[source_future]; fn=dict(source_functions)[source_name]
         SOURCE_STATS[source_name]={}
         try:
             jobs=fn()
