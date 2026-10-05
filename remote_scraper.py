@@ -281,7 +281,7 @@ def linkedin_query(keywords, location, remote, kind):
         for title,u in web_search(q,20):
             if "/jobs/view/" not in u: continue
             if not target(title): continue
-            parts=[clean(x) for x in re.split(r"\\s[|–—-]\\s*",title) if clean(x)]
+            parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
             company=parts[-1] if len(parts)>1 else "LinkedIn Employer"
             out.append(make_job(parts[0] if parts else title,company,location,remote,"LinkedIn Search",u,"",title,kind))
     return out
@@ -380,38 +380,41 @@ def direct_himalayas(kind):
     for _,variants in SEARCHES:
         seed=" OR ".join(variants[:3])
         if not budget_ok(): return out
-            try:
-                r=S.get("https://himalayas.app/jobs/api/search",params={"q":seed,"sort":"recent","page":1},headers=hdr(),timeout=12)
-                if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
-                for x in r.json().get("jobs",[]):
-                    title=clean(x.get("title")); desc=BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True)
-                    if not accept_job(title,desc): continue
-                    u=x.get("applicationLink") or x.get("guid")
-                    if not u or u in seen: continue
-                    seen.add(u)
-                    loc=", ".join(x.get("locationRestrictions") or []) or "Remote / Worldwide"
-                    out.append(make_job(title,x.get("companyName",""),loc,True,board,u,"",desc,kind))
-            except (requests.RequestException,ValueError) as e:
-                board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
+        try:
+            r=S.get("https://himalayas.app/jobs/api/search",params={"q":seed,"sort":"recent","page":1},headers=hdr(),timeout=12)
+            if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
+            for x in r.json().get("jobs",[]):
+                title=clean(x.get("title")); desc=BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True)
+                if not accept_job(title,desc): continue
+                u=x.get("applicationLink") or x.get("guid")
+                if not u or u in seen: continue
+                seen.add(u)
+                loc=", ".join(x.get("locationRestrictions") or []) or "Remote / Worldwide"
+                out.append(make_job(title,x.get("companyName",""),loc,True,board,u,"",desc,kind))
+        except (requests.RequestException,ValueError) as e:
+            board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
     board_stat(board,"FOUND",len(out)); return out
 
 def direct_remotive(kind):
     out=[];seen=set(); board="Remotive"
     for _,variants in SEARCHES:
-        for seed in dict.fromkeys(variants[:3]):
-            if not budget_ok(): return out
-            try:
-                r=S.get("https://remotive.com/api/remote-jobs",params={"search":seed,"limit":100},headers=hdr(),timeout=12)
-                if r.status_code!=200: board_stat(board,"HTTP_"+str(r.status_code)); continue
-                for x in r.json().get("jobs",[]):
-                    title=clean(x.get("title")); desc=BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True)
-                    if not accept_job(title,desc): continue
-                    u=x.get("url")
-                    if not u or u in seen: continue
-                    seen.add(u)
-                    out.append(make_job(title,x.get("company_name",""),clean(x.get("candidate_required_location","")) or "Remote / Worldwide",True,board,u,clean(x.get("publication_date","")),desc,kind))
-            except (requests.RequestException,ValueError) as e:
-                board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
+        seed=" OR ".join(variants[:3])
+        if not budget_ok(): return out
+        try:
+            r=S.get("https://remotive.com/api/remote-jobs",params={"search":seed,"limit":100},headers=hdr(),timeout=12)
+            if r.status_code!=200:
+                board_stat(board,"HTTP_"+str(r.status_code)); continue
+            for x in r.json().get("jobs",[]):
+                title=clean(x.get("title")); desc=BeautifulSoup(x.get("description",""),"html.parser").get_text(" ",strip=True)
+                if not accept_job(title,desc): continue
+                u=x.get("url")
+                if not u or u in seen: continue
+                seen.add(u)
+                out.append(make_job(title,x.get("company_name",""),
+                    clean(x.get("candidate_required_location","")) or "Remote / Worldwide",
+                    True,board,u,clean(x.get("publication_date","")),desc,kind))
+        except (requests.RequestException,ValueError) as e:
+            board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
     board_stat(board,"FOUND",len(out)); return out
 
 def direct_board_search(board,domain,kind,remote):
