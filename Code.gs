@@ -298,7 +298,6 @@ function generateEmail_(job) {
     : "I’m reaching out regarding the " + role + " opportunity.";
 
   let proof = "";
-  const family = roleFamily_(job);
   if (String(job["Spontaneous"] || "").toUpperCase() === "YES") {
     proof = "My background combines B2B account management, customer success, commercial administration, operations and international client support. At HBX Group, I managed 600+ B2B travel-agency accounts, while my more recent experience also includes logistics, e-commerce and administrative coordination.";
   } else if (family === "customer_success" || family === "travel") {
