@@ -1,6 +1,9 @@
 name: Jobs + Company Email Scraper
 
 on:
+  push:
+    paths:
+      - '.scraper-validation-trigger'
   workflow_dispatch:
   # Two complete runs per day only. 4h30 is the maximum run budget, not the frequency.
   schedule:
