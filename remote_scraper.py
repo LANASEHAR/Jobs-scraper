@@ -334,7 +334,7 @@ def indeed():
             h=host(u)
             if "indeed.com" not in h or ("/viewjob" not in u and "/jobs/view" not in u): continue
             if not target(title): continue
-            parts=[clean(x) for x in re.split(r"\\s[|–—-]\\s*",title) if clean(x)]
+            parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
             jt=parts[0] if parts else clean(title)
             company=parts[-1] if len(parts)>1 else "Indeed Employer"
             found.append(make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind))
