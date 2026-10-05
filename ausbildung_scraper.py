@@ -472,8 +472,9 @@ def build_portal_query_urls(portal, base, term):
             portal_url(base,f"/jobs/{slug}"),
             portal_url(base,f"/jobs/{slug}-ausbildung"),
         ]
-        for city in TARGET_CITIES[:PORTAL_CITY_LIMIT]:
-            urls.append(portal_url(base,f"/jobs/{slug}-ausbildung-{role_slug(city)}"))
+        if term == "hotelfachfrau":
+            for city in TARGET_CITIES[:PORTAL_CITY_LIMIT]:
+                urls.append(portal_url(base,f"/jobs/{slug}-ausbildung-{role_slug(city)}"))
     elif portal=="hogapage.de":
         urls.append(portal_url(base,f"/jobs/{slug}"))
     elif portal=="yourfirm.de":
@@ -691,6 +692,14 @@ def search_portal_native(portal):
         for term in terms[:5]:
             urls += build_portal_query_urls(portal,base,term)
     urls=list(dict.fromkeys(urls))
+    # Native role/search URLs are placed first; sitemap URLs remain the deep-
+    # discovery safety net rather than consuming the whole crawl budget.
+    query_first=[]
+    for _,role,terms in PRIORITIES:
+        for term in terms[:5]:
+            query_first.extend(build_portal_query_urls(portal,base,term))
+    sitemap_first=[u for u in urls if u not in query_first]
+    urls=list(dict.fromkeys(query_first + sitemap_first))
 
     queue=list(urls[:CRAWL_MAX_URLS_PER_PORTAL])
     queued=set(queue); visited=set(); detail_pages=0
@@ -740,15 +749,18 @@ def search_portal_native(portal):
     return out
 
 def search_portals_native():
+    portals=[p for p in PORTALS if p!="arbeitsagentur.de"]
     all_jobs=[]
-    # Each portal is isolated: a failure on one source must never stop the
-    # complete Ausbildung run.
-    for portal in PORTALS:
-        if portal=="arbeitsagentur.de": continue
-        try:
-            all_jobs.extend(search_portal_native(portal))
-        except Exception as exc:
-            print(f"[PORTAL ERROR] {portal}: {type(exc).__name__}: {exc}")
+    # Independent portal crawls run in parallel so deeper crawling does not
+    # turn the twice-daily workflow into a multi-hour serial crawl.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures={ex.submit(search_portal_native,p):p for p in portals}
+        for fut in as_completed(futures):
+            portal=futures[fut]
+            try:
+                all_jobs.extend(fut.result())
+            except Exception as exc:
+                print(f"[PORTAL ERROR] {portal}: {type(exc).__name__}: {exc}")
     return all_jobs
 
 def search_web():
