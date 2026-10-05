@@ -277,35 +277,65 @@ def parse_linkedin(html, remote, kind):
             out.append(make_job(title,company,loc,remote,"LinkedIn",urljoin("https://www.linkedin.com",u),age,"",kind))
     return out
 
+def debug_event(board, event, **data):
+    payload={"ts":now(),"board":board,"event":event}
+    payload.update({k:clean(v)[:500] if isinstance(v,str) else v for k,v in data.items()})
+    print("[DEBUG]",json.dumps(payload,ensure_ascii=False),flush=True)
+    BOARD_STATS.setdefault(board,{})
+    BOARD_STATS[board].setdefault("DEBUG_EVENTS",[])
+    if len(BOARD_STATS[board]["DEBUG_EVENTS"]) < 80:
+        BOARD_STATS[board]["DEBUG_EVENTS"].append(payload)
+
 def linkedin_query(keywords, location, remote, kind):
-    global LINKEDIN_API_DISABLED
-    out=[]
+    out=[]; seen=set()
+    params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start=0"
+    if remote: params += "&f_WT=2"
+
+    # Guest endpoint is attempted once per query. We diagnose instead of hammering it.
     if not LINKEDIN_API_DISABLED and budget_ok():
-        params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start=0"
-        if remote: params += "&f_WT=2"
+        url="https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params
         try:
-            h=fetch("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"+params,12,0)
-            if h:
-                found=parse_linkedin(h,remote,kind)
+            r=S.get(url,headers=hdr(),timeout=12,allow_redirects=True)
+            debug_event("LinkedIn","guest_http",
+                        status=r.status_code, final_url=r.url,
+                        content_type=r.headers.get("content-type",""),
+                        bytes=len(r.content))
+            if r.status_code==200 and r.text:
+                found=parse_linkedin(r.text,remote,kind)
+                debug_event("LinkedIn","guest_parsed",query=keywords,location=location,
+                            kind=kind,found=len(found))
                 out.extend(found)
-                print(f"[LinkedIn page] {keywords} {kind} start=0 found={len(found)}",flush=True)
-            else:
+            elif r.status_code in (401,403,429):
                 with LINKEDIN_API_LOCK:
                     LINKEDIN_API_DISABLED=True
-                print("[LinkedIn] API rate-limited/unavailable; switching remaining discovery to public indexes",flush=True)
-        except Exception:
-            with LINKEDIN_API_LOCK:
-                LINKEDIN_API_DISABLED=True
+                debug_event("LinkedIn","guest_blocked",status=r.status_code,
+                            action="disable_guest_until_next_run")
+            else:
+                debug_event("LinkedIn","guest_failed",status=r.status_code)
+        except requests.RequestException as e:
+            debug_event("LinkedIn","guest_exception",error=type(e).__name__,detail=str(e)[:180])
 
-    # Public indexes remain available even when LinkedIn's guest API rate-limits the runner.
-    if len(out)<5 and budget_ok():
-        q=f'site:linkedin.com/jobs/view "{keywords}" "{location}"'
+    # Always keep an index fallback, but diversify queries so one stale index
+    # result cannot make LinkedIn appear empty.
+    queries=[
+        f'site:linkedin.com/jobs/view "{keywords}" "{location}"',
+        f'site:linkedin.com/jobs/view "{keywords}" remote',
+        f'site:linkedin.com/jobs/view "{keywords}" "{location}" after:2026-01-01',
+    ]
+    fallback_count=0
+    for q in queries:
+        if not budget_ok(): break
         for title,u in web_search(q,20):
-            if "/jobs/view/" not in u: continue
+            if "/jobs/view/" not in u or u in seen: continue
             if not target(title): continue
             parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
             company=parts[-1] if len(parts)>1 else "LinkedIn Employer"
-            out.append(make_job(parts[0] if parts else title,company,location,remote,"LinkedIn Search",u,"",title,kind))
+            j=make_job(parts[0] if parts else title,company,location,remote,
+                       "LinkedIn Search",u,"",title,kind)
+            if j["id"] in seen: continue
+            seen.add(j["id"]);out.append(j);fallback_count+=1
+    debug_event("LinkedIn","query_complete",query=keywords,location=location,
+                kind=kind,total=len(out),fallback=fallback_count)
     return out
 
 def linkedin():
@@ -339,27 +369,42 @@ def linkedin():
     return out
 
 def indeed():
-    """Recover Indeed listings through public indexes without hammering 403-protected Indeed HTML."""
+    """Indeed discovery with per-query diagnostics and public-index fallback.
+    Direct HTML is intentionally not hammered when it returns access errors.
+    """
     targets=[("WORLDWIDE_REMOTE","Remote",True),("MOROCCO_REMOTE","Morocco",True),("CASABLANCA_ONSITE","Casablanca",False)]
     tasks=[]
     for family,variants in SEARCHES:
-        seeds=" OR ".join(f'"{x}"' for x in variants[:3])
+        seeds=" OR ".join(f'"{x}"' for x in variants[:4])
         for kind,loc,remote in targets:
             tasks.append((family,kind,loc,remote,seeds))
 
     out=[]; seen=set()
     def one(t):
         family,kind,loc,remote,seeds=t
-        q=f'site:indeed.com/viewjob ({seeds}) "{loc}"'
+        queries=[
+            f'site:indeed.com/viewjob ({seeds}) "{loc}"',
+            f'site:indeed.com/jobs ({seeds}) "{loc}"',
+            f'site:ma.indeed.com/viewjob ({seeds}) "{loc}"',
+            f'site:fr.indeed.com/viewjob ({seeds}) "{loc}"',
+        ]
         found=[]
-        for title,u in web_search(q,30):
-            h=host(u)
-            if "indeed.com" not in h or ("/viewjob" not in u and "/jobs/view" not in u): continue
-            if not target(title): continue
-            parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
-            jt=parts[0] if parts else clean(title)
-            company=parts[-1] if len(parts)>1 else "Indeed Employer"
-            found.append(make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind))
+        for q in queries:
+            if not budget_ok(): break
+            results=web_search(q,30)
+            accepted=0
+            for title,u in results:
+                h=host(u)
+                if "indeed.com" not in h or ("/viewjob" not in u and "/jobs/view" not in u): continue
+                if not target(title): continue
+                parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
+                jt=parts[0] if parts else clean(title)
+                company=parts[-1] if len(parts)>1 else "Indeed Employer"
+                j=make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind)
+                if j["id"] in seen: continue
+                found.append(j);accepted+=1
+            debug_event("Indeed","query",family=family,kind=kind,
+                        location=loc,results=len(results),accepted=accepted)
         return found
 
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -371,10 +416,12 @@ def indeed():
                         seen.add(j["id"]); out.append(j)
             except Exception as e:
                 board_stat("Indeed","ERROR")
-                print(f"[Indeed ERROR] {e}",flush=True)
+                debug_event("Indeed","worker_error",error=type(e).__name__,detail=str(e)[:180])
     board_stat("Indeed","INDEXED_FOUND",len(out))
+    debug_event("Indeed","run_complete",total=len(out))
     print(f"[Indeed] indexed total={len(out)}",flush=True)
     return out
+
 
 def accept_job(title, desc=""):
     text=(clean(title)+" "+clean(desc)).lower()
@@ -860,8 +907,22 @@ def scrape():
         try: post({"mode":"enrich","updates":updates[i:i+50]})
         except Exception as e: print(f"[ENRICH FINAL WRITE] {e}",flush=True)
 
+    # Persist a compact health signal so every scheduled run can be diagnosed later.
+    health={}
+    for board in ("Indeed","LinkedIn"):
+        s=BOARD_STATS.get(board,{})
+        health[board]={
+            "status": "OK" if (s.get("INDEXED_FOUND",0) or s.get("NATIVE_FOUND",0) or
+                               any(e.get("event") in ("guest_parsed","query_complete") and
+                                   int(e.get("found",0) or e.get("total",0) or 0)>0
+                                   for e in s.get("DEBUG_EVENTS",[]))) else "NO_RESULTS",
+            "stats": {k:v for k,v in s.items() if k!="DEBUG_EVENTS"},
+            "debug_events": s.get("DEBUG_EVENTS",[])[:20],
+        }
+
     run={
         "finished_at":now(),"total_unique":len(jobs),"added":added_total,
+        "board_health":health,
         "email_found":sum(1 for j in jobs if j.get("emails_rh")),
         "no_email":sum(1 for j in jobs if not j.get("emails_rh")),
         "source_totals":source_totals,"board_stats":BOARD_STATS,"source_stats":SOURCE_STATS,
