@@ -1,0 +1,41 @@
+name: Remote Travel Hospitality - Morocco
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "remote_travel_hospitality_scraper.py"
+      - ".github/workflows/remote-travel-hospitality.yml"
+      - "Code.gs"
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Validate scraper
+        run: python -m py_compile remote_travel_hospitality_scraper.py
+      - name: Run remote Travel/Hospitality scraper
+        env:
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+        run: python -u remote_travel_hospitality_scraper.py
+      - name: Upload remote results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-travel-hospitality-leads
+          path: remote_travel_hospitality.csv
+          if-no-files-found: ignore
+          retention-days: 14
