@@ -254,6 +254,7 @@ function generateRemoteEmail_(job) {
 
 function generateEmail_(job) {
   if (String(job["Search Type"] || "").toUpperCase() === "REMOTE_TRAVEL_HOSPITALITY") return generateRemoteEmail_(job);
+  if (String(job["Search Type"] || "").toUpperCase() === "REMOTE_TRAVEL_HOSPITALITY") return generateRemoteEmail_(job);
 
   const company = companyMention_(job["Entreprise"]);
   const role = String(job["Intitulé"] || job["Role Cible"] || "Ausbildungsplatz").trim();
