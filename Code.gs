@@ -16,7 +16,7 @@ const CONFIG = {
   LINKEDIN: "",
   CV_FILE_NAME: "CV_Halima_Essaouaf.pdf",
 
-  SHEETS: ["Ausbildung", "Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous"],
+  SHEETS: ["Ausbildung", "Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous", "Remote Travel Hospitality"],
 
   // Gmail/Apps Script consumer accounts currently have a 100-recipient/day quota.
   // Keep a margin instead of trying to consume the entire quota.
@@ -224,7 +224,37 @@ function naturalFit_(family, details) {
   return fallback[family] || "Besonders angesprochen hat mich die Verbindung aus praktischer Verantwortung, Kundenorientierung und strukturiertem Arbeiten.";
 }
 
+function generateRemoteEmail_(job) {
+  const company = companyMention_(job["Entreprise"]);
+  const role = String(job["Intitulé"] || job["Role Cible"] || "the opportunity").trim();
+  const access = String(job["acces_depuis_maroc"] || job["Access From Morocco"] || "").trim();
+
+  const subject = company
+    ? "Application – " + role + " – " + company + " | Halima Essaouaf"
+    : "Application – " + role + " | Halima Essaouaf";
+
+  const eligibility = /CONFIRMED_MOROCCO/i.test(access)
+    ? "I am based in Casablanca, Morocco and the role indicates eligibility for Morocco."
+    : "I am based in Casablanca, Morocco and am specifically interested in remote roles that can be performed from Morocco.";
+
+  const body =
+    "Dear Hiring Team" + (company ? " at " + company : "") + ",\n\n" +
+    "I am reaching out regarding the " + role + " opportunity." + "\n\n" +
+    "I bring 5+ years of experience across B2B account management, customer success, sales, customer support and business operations. At HBX Group (Hotelbeds / Bedsonline), I managed a portfolio of 600+ B2B travel-agency accounts across the Middle East, supporting onboarding, training, relationship management, retention and growth in Arabic, French and English." + "\n\n" +
+    "My current experience also combines commercial administration, supplier communication, logistics/order coordination, e-commerce and customer operations. This gives me a practical profile at the intersection of client relationships, travel, commercial work and structured operations." + "\n\n" +
+    eligibility + " I am particularly interested in international travel, hospitality and travel-tech teams where I can contribute in Customer Success, Account Management, Sales, Partnerships, Operations or Customer Experience." + "\n\n" +
+    "I would be happy to discuss whether my profile could be relevant to your team. My CV is attached for your consideration." + "\n\n" +
+    "Kind regards,\n" +
+    CONFIG.NAME + "\n" +
+    CONFIG.EMAIL + "\n" +
+    CONFIG.PHONE;
+
+  return {subject: subject, body: body};
+}
+
 function generateEmail_(job) {
+  if (String(job["Search Type"] || "").toUpperCase() === "REMOTE_TRAVEL_HOSPITALITY") return generateRemoteEmail_(job);
+
   const company = companyMention_(job["Entreprise"]);
   const role = String(job["Intitulé"] || job["Role Cible"] || "Ausbildungsplatz").trim();
   const family = roleFamily_(job);
