@@ -29,6 +29,10 @@ const CONFIG = {
 
   FOLLOWUP_DAYS: 5,
 
+  // Permanent do-not-contact block. Never send to Fertan, even if the scraper rediscovers the company or its email address later.
+  BLOCKED_COMPANIES: ["fertan"],
+  BLOCKED_EMAIL_DOMAINS: ["fertan.de"],
+
   HEADERS: [
     "Date Detection","Status","Role Cible","Intitulé","Entreprise","Lieu","Remote",
     "Source","Lien","ID","Company Site","Emails RH","Deep Status","Fit Score",
@@ -77,6 +81,17 @@ function setupAutomation() {
 
 function isValidEmail_(email) {
   return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(String(email || "").trim());
+}
+
+function isBlockedRecipient_(email, company) {
+  const e = String(email || "").trim().toLowerCase();
+  const c = String(company || "").trim().toLowerCase();
+
+  if (CONFIG.BLOCKED_EMAIL_DOMAINS.some(domain =>
+      e === domain || e.endsWith("@" + domain))) return true;
+
+  return CONFIG.BLOCKED_COMPANIES.some(name =>
+    c === name || c.includes(name) || e.includes(name));
 }
 
 function firstEmail_(value) {
@@ -368,6 +383,10 @@ function generateEmail_(job) {
 function sendOne_(sheet, rowNumber, headers, job, cvFile) {
   const email = firstEmail_(job["Emails RH"]);
   if (!email) return false;
+  if (isBlockedRecipient_(email, job["Entreprise"])) {
+    Logger.log("BLOCKED recipient — no email sent: " + email + " / " + job["Entreprise"]);
+    return false;
+  }
 
   const mail = generateEmail_(job);
 
@@ -431,7 +450,12 @@ function sendPendingApplications() {
       if (status !== "NEW" && status !== "NOUVEAU") continue;
 
       const job = rowObject_(headers, data[r]);
-      if (!firstEmail_(job["Emails RH"])) continue;
+      const recipient = firstEmail_(job["Emails RH"]);
+      if (!recipient) continue;
+      if (isBlockedRecipient_(recipient, job["Entreprise"])) {
+        Logger.log("BLOCKED pending application — no email sent: " + recipient + " / " + job["Entreprise"]);
+        continue;
+      }
 
       try {
         if (sendOne_(sh, r + 1, headers, job, cvFile)) {
@@ -479,6 +503,10 @@ function sendDueFollowups() {
       const job = rowObject_(headers, data[r]);
       const email = firstEmail_(job["Emails RH"]);
       if (!email) continue;
+      if (isBlockedRecipient_(email, job["Entreprise"])) {
+        Logger.log("BLOCKED follow-up — no email sent: " + email + " / " + job["Entreprise"]);
+        continue;
+      }
 
       const role = String(job["Intitulé"] || job["Role Cible"] || "the position");
       const company = companyMention_(job["Entreprise"]);
