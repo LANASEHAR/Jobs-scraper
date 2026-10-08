@@ -42,10 +42,18 @@ def clean(v):
     return re.sub(r"\s+", " ", str(v or "")).strip()
 
 def valid_email(e):
-    e = clean(e).lower()
-    if not EMAIL_RE.fullmatch(e): return False
+    e = clean(e).lower().strip(" .;,<>\"'")
+    if not EMAIL_RE.fullmatch(e):
+        return False
     domain = e.split("@",1)[1]
-    return domain not in BAD_DOMAINS and not e.startswith(("noreply@","no-reply@","privacy@","security@"))
+    local = e.split("@",1)[0]
+    # Do not filter by department: contact/info/sales/support/privacy/security/etc.
+    # are all legitimate public addresses. Exclude only obvious system/bounce mailboxes.
+    if domain in BAD_DOMAINS:
+        return False
+    if local in {"noreply","no-reply","donotreply","do-not-reply","mailer-daemon","postmaster"}:
+        return False
+    return True
 
 def emails_from(html):
     text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", html or "", flags=re.I)
@@ -165,34 +173,59 @@ def official_site(company):
     return ""
 
 def discover_site_emails(site, company):
-    if not site: return set()
+    """Find any public company email; never restrict discovery to HR/careers."""
+    if not site:
+        return set()
     base=site.rstrip("/")
     found=set()
-    # Search engines often expose emails that are not linked from the homepage.
-    for q in (
-        f'"{company}" "@{host(site)}"',
+    seen=set()
+    queue=[urljoin(base+"/", path.lstrip("/")) for path in PATHS]
+
+    # Search engines can expose public emails from pages that are not linked from
+    # the homepage. Search by company, not by department.
+    queries = [
+        f'"{company}" email',
+        f'"{company}" contact email',
+        f'"{company}" "@"',
+        f'"{company}" mailto',
+        f'site:{host(site)} email',
+        f'site:{host(site)} "@"',
         f'site:{host(site)} "@{host(site)}"',
-        f'site:{host(site)} (email OR contact OR careers OR recruitment)'
-    ):
-        for _,u in search(q,12):
+    ]
+    for q in queries:
+        for _,u in search(q,15):
             if blocked(u): continue
             html,_=get(u)
+            if not html: continue
             found |= emails_from(html)
-    # Crawl likely contact/recruitment pages and discover additional internal links.
-    for path in PATHS:
-        html,final=get(urljoin(base+"/",path))
+
+    # Broadly crawl the public company website. Contact/HR/careers are only
+    # priority links; they are NOT the only pages we inspect.
+    max_pages=50
+    while queue and len(seen)<max_pages:
+        url=queue.pop(0)
+        if url in seen or host(url)!=host(site): continue
+        seen.add(url)
+        html,final=get(url)
         if not html: continue
         found |= emails_from(html)
         soup=BeautifulSoup(html,"html.parser")
+        links=[]
         for a in soup.select("a[href]"):
-            label=clean(a.get_text(" ",strip=True)).lower()
             href=a.get("href","")
-            if not href: continue
-            if any(k in (label+" "+href.lower()) for k in ("contact","career","recruit","human","hr","jobs","impressum","kontakt")):
-                target=urljoin(final,href)
-                if host(target)==host(site):
-                    h,_=get(target)
-                    found |= emails_from(h)
+            if not href or href.startswith(("mailto:","tel:","javascript:")): continue
+            target=urljoin(final,href).split("#",1)[0]
+            if host(target)!=host(site) or target in seen: continue
+            label=clean(a.get_text(" ",strip=True)).lower()
+            priority=0 if any(k in (label+" "+target.lower()) for k in
+                              ("contact","about","team","company","office","email","career",
+                               "job","recruit","sales","support","press","media","legal",
+                               "partner","business")) else 1
+            links.append((priority,target))
+        links.sort()
+        for _,target in links[:20]:
+            if target not in seen and len(queue)<100:
+                queue.append(target)
     return found
 
 def enrich(job):
@@ -203,9 +236,10 @@ def enrich(job):
     # without fabricating a domain.
     if not found and reliable_company(company):
         for q in (
-            f'"{company}" "@" email',
-            f'"{company}" recruitment email',
-            f'"{company}" HR email'
+            f'"{company}" email',
+            f'"{company}" contact email',
+            f'"{company}" "@"',
+            f'"{company}" mailto'
         ):
             for _,u in search(q,10):
                 h,_=get(u)
