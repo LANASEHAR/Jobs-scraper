@@ -68,7 +68,7 @@ function setupAutomation() {
 
   ScriptApp.getProjectTriggers().forEach(t => {
     const fn = t.getHandlerFunction();
-    if (fn === "sendPendingApplications") ScriptApp.deleteTrigger(t);
+    if (fn === "sendPendingApplications" || fn === "sendDueFollowups") ScriptApp.deleteTrigger(t);
   });
 
   ScriptApp.newTrigger("sendPendingApplications")
@@ -76,7 +76,12 @@ function setupAutomation() {
     .everyHours(1)
     .create();
 
-  Logger.log("Hourly Gmail trigger installed.");
+  ScriptApp.newTrigger("sendDueFollowups")
+    .timeBased()
+    .everyHours(1)
+    .create();
+
+  Logger.log("Hourly Gmail triggers installed for new applications and follow-ups.");
 }
 
 function isValidEmail_(email) {
