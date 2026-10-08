@@ -229,9 +229,13 @@ def webhook(payload):
     return r.json()
 
 def main():
-    data=webhook({"mode":"pending","limit":5000,"sheet":"ALL"})
-    jobs=data.get("jobs",[])
-    print(f"[EMAIL ENRICH] pending={len(jobs)}",flush=True)
+    jobs=[]
+    for sheet in ("Worldwide Remote","Morocco Remote","Casablanca Onsite","Casablanca Spontaneous"):
+        data=webhook({"mode":"pending","limit":5000,"sheet":sheet})
+        for job in data.get("jobs",[]):
+            job["_sheet"]=sheet
+            jobs.append(job)
+    print(f"[EMAIL ENRICH] pending={len(jobs)} remote jobs",flush=True)
     updates=[]
     for idx,job in enumerate(jobs,1):
         try:
