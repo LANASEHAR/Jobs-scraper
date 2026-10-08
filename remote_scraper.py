@@ -166,7 +166,7 @@ def make_job(title, company, loc, remote, source, url, age="", desc="", kind=Non
         "id": jid(source, url, title),
         "date_detection": now(), "statut": "NEW",
         "role_cible": title, "intitule": title,
-        "entreprise": company or "Unknown",
+        "entreprise": clean(company),
         "lieu": loc or ("Remote / Worldwide" if remote else "Casablanca, Morocco"),
         "remote": bool(remote), "source": source, "lien": url,
         "company_site": "", "emails_rh": "", "deep_status": "PENDING",
@@ -823,7 +823,11 @@ def spontaneous_casablanca():
             h=host(u)
             if not h or any(h==x or h.endswith("."+x) for x in BLOCKED_DOMAINS): continue
             if any(x in h for x in ("linkedin","indeed","glassdoor","bayt","rekrute","emploi.ma","novojob")): continue
-            name=clean(re.sub(r"\s*[-|–]\s*(careers|jobs|recruitment|casablanca).*$","",title,flags=re.I)) or h.split(".")[0].title()
+            name=clean(re.sub(r"\s*[-|–]\s*(careers|jobs|recruitment|casablanca).*$","",title,flags=re.I))
+            # Never turn a domain into a fake company name. Only use a name
+            # actually exposed by the public result.
+            if not name or name.lower() in {"careers","jobs","recruitment","company"}:
+                continue
             companies[h]={"name":name,"site":"https://"+h+"/"}
     out=[]
     for h,info in companies.items():
