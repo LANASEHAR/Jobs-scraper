@@ -34,3 +34,9 @@ jobs:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
         run: python remote_scraper.py --mode scrape
+
+      - name: Second-pass company and email enrichment
+        env:
+          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+          PYTHONUNBUFFERED: '1'
+        run: python email_enricher.py
