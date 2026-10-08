@@ -268,8 +268,11 @@ function generateRemoteEmail_(job) {
 }
 
 function generateEmail_(job) {
-  if (String(job["Search Type"] || "").toUpperCase() === "REMOTE_TRAVEL_HOSPITALITY") return generateRemoteEmail_(job);
-  if (String(job["Search Type"] || "").toUpperCase() === "REMOTE_TRAVEL_HOSPITALITY") return generateRemoteEmail_(job);
+  const searchType = String(job["Search Type"] || "").toUpperCase();
+  const familyPreview = roleFamily_(job);
+  if (searchType === "REMOTE_TRAVEL_HOSPITALITY" || !/^AUSBILDUNG_/.test(familyPreview)) {
+    return generateRemoteEmail_(job);
+  }
 
   const company = companyMention_(job["Entreprise"]);
   const role = String(job["Intitulé"] || job["Role Cible"] || "Ausbildungsplatz").trim();
@@ -638,6 +641,7 @@ function doPost(e) {
             if (String(data[r][idCol] || "").trim() !== id) continue;
 
             const values = {
+              "Entreprise": u.entreprise || "",
               "Company Site": u.company_site || "",
               "Emails RH": u.emails_rh || "",
               "Deep Status": u.deep_status || "",
@@ -711,4 +715,11 @@ function testEmailGeneration() {
     "Emails RH":"careers@example.com"
   };
   Logger.log(generateEmail_(sample).body);
+}
+
+
+function sendRemoteBatchNow() {
+  // Manual diagnostic entry point. It uses the same safeguards and quota checks
+  // as the scheduled sender, but can be run from Apps Script to verify Gmail.
+  sendPendingApplications();
 }
