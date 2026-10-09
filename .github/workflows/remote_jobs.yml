@@ -9,7 +9,7 @@ on:
       - '.github/workflows/remote_jobs.yml'
       - 'requirements.txt'
   workflow_dispatch:
-  # Two complete runs per day only. 4h30 is the maximum run budget, not the frequency.
+  # Two scheduled runs per day; allow discovery and email enrichment to finish.
   schedule:
     - cron: '0 5 * * *'
     - cron: '0 17 * * *'
@@ -25,7 +25,8 @@ jobs:
   scrape:
     name: Jobs + spontaneous company discovery
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Discovery can use up to 40 minutes; the second pass needs its own budget.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
