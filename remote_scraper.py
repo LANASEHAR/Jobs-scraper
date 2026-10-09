@@ -60,8 +60,8 @@ JOB_BOARD_SEARCHES = [
     ("TopCSJobs","topcsjobs.com"),("Support Driven","supportdriven.com"),
 ]
 
-// Native board crawling: each board is treated as its own source.
-// APIs/RSS/sitemaps/search forms are preferred; public search indexes are fallback only.
+# Native board crawling: each board is treated as its own source.
+# APIs/RSS/sitemaps/search forms are preferred; public search indexes are fallback only.
 NATIVE_BOARD_CONFIG = {
     "Emploi.ma": {"domain":"emploi.ma","start":"https://www.emploi.ma/"},
     "ReKrute": {"domain":"rekrute.com","start":"https://www.rekrute.com/"},
