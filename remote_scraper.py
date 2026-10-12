@@ -16,6 +16,10 @@ UA = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
 ]
 S = requests.Session()
+# Per-run HTTP cache: avoids re-fetching the same board pages for each location.
+FETCH_CACHE = {}
+FETCH_CACHE_LOCK = threading.Lock()
+BLOCKED_HOSTS_RUN = set()
 
 SEARCHES = [
     ("Customer Success", ["customer success manager","customer success","client success","client experience","customer onboarding","customer enablement","customer experience manager"]),
@@ -178,22 +182,46 @@ def make_job(title, company, loc, remote, source, url, age="", desc="", kind=Non
     }
 
 def fetch(url, timeout=10, retries=1):
-    if not budget_ok(): return None
+    """Fetch public pages once per run; stop hammering hosts returning access/rate limits."""
+    if not budget_ok():
+        return None
+    key = url.split("#", 1)[0]
+    h = host(key)
+    with FETCH_CACHE_LOCK:
+        if key in FETCH_CACHE:
+            return FETCH_CACHE[key]
+        if h in BLOCKED_HOSTS_RUN:
+            return None
+
+    result = None
     for attempt in range(retries + 1):
         try:
-            r = S.get(url, headers=hdr(), timeout=timeout, allow_redirects=True)
+            r = S.get(key, headers=hdr(), timeout=timeout, allow_redirects=True)
             if r.status_code == 200 and r.text:
-                return r.text
+                result = r.text
+                break
             stat("HTTP", str(r.status_code))
-            print(f"[HTTP] {r.status_code} {url}", flush=True)
-            if r.status_code in (401,403,429):
+            # A 403/429 is a host-level signal: stop sending requests to that host this run.
+            if r.status_code in (401, 403, 429):
+                with FETCH_CACHE_LOCK:
+                    BLOCKED_HOSTS_RUN.add(host(r.url or key))
+                    FETCH_CACHE[key] = None
+                print(f"[HTTP SKIP HOST] {r.status_code} {host(r.url or key)}; using other sources", flush=True)
                 return None
+            # Missing/temporarily unavailable URLs are cached to prevent repeated noisy requests.
+            if r.status_code in (404, 410, 503):
+                print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
+                break
+            print(f"[HTTP] {r.status_code} {key}", flush=True)
         except requests.RequestException as e:
-            stat("HTTP","exception")
-            print(f"[HTTP ERROR] {type(e).__name__} {url}", flush=True)
+            stat("HTTP", "exception")
+            print(f"[HTTP ERROR] {type(e).__name__} {key}", flush=True)
         if attempt < retries:
             time.sleep(min(3, 1.2 ** attempt))
-    return None
+
+    with FETCH_CACHE_LOCK:
+        FETCH_CACHE[key] = result
+    return result
 
 def web_search(q, limit=20):
     """Use a bounded public-index fanout. Cache identical queries and never let one engine block the run."""
