@@ -2,7 +2,7 @@
 Collects any genuine publicly published company email, not only HR/recruitment.
 Never guesses addresses, bypasses access controls, or submits forms.
 """
-import json, os, re, threading, time
+import json, os, random, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote_plus, urljoin, urlparse, parse_qs
 
@@ -14,6 +14,7 @@ TIMEOUT = 8
 WORKERS = max(4, min(12, int(os.getenv("EMAIL_WORKERS", "8"))))
 MAX_SITE_PAGES = max(10, min(40, int(os.getenv("EMAIL_MAX_SITE_PAGES", "25"))))
 MAX_COMPANIES_PER_RUN = max(25, min(200, int(os.getenv("EMAIL_MAX_COMPANIES_PER_RUN", "100"))))
+PENDING_SCAN_PER_SHEET = max(250, min(5000, int(os.getenv("EMAIL_PENDING_SCAN_PER_SHEET", "1000"))))
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}", re.I)
 BAD_DOMAINS = {"example.com", "sentry.io", "schema.org", "google.com", "facebook.com", "linkedin.com"}
 BLOCKED_HOSTS = {
@@ -338,7 +339,7 @@ def main():
     by_sheet, seen = {}, set()
     # Bound each run and interleave sheets so one large board cannot starve others.
     for sheet in sheets:
-        data = webhook({"mode": "pending", "limit": min(5000, MAX_COMPANIES_PER_RUN), "sheet": sheet})
+        data = webhook({"mode": "pending", "limit": PENDING_SCAN_PER_SHEET, "sheet": sheet})
         rows = []
         for job in data.get("jobs", []):
             key = (sheet, clean(job.get("ID", job.get("id", ""))))
@@ -347,6 +348,8 @@ def main():
             seen.add(key)
             job["_sheet"] = sheet
             rows.append(job)
+        # Randomize each bounded pending slice so repeated runs do not starve later rows.
+        random.shuffle(rows)
         by_sheet[sheet] = rows
     all_jobs = []
     cursor = 0
