@@ -1,13 +1,6 @@
 name: Jobs + Company Email Scraper
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'remote_scraper.py'
-      - 'email_enricher.py'
-      - '.github/workflows/remote_jobs.yml'
-      - 'requirements.txt'
   workflow_dispatch:
   # Two scheduled runs per day; allow discovery and email enrichment to finish.
   schedule:
