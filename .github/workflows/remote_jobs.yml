@@ -52,6 +52,7 @@ jobs:
           exit 1
 
       - name: Second-pass company and email enrichment
+        if: always()
         timeout-minutes: 90
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
