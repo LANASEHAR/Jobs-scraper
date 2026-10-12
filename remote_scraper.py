@@ -530,6 +530,78 @@ def direct_remotive(kind):
             board_stat(board,"ERROR"); print(f"[{board}] {type(e).__name__}",flush=True)
     board_stat(board,"FOUND",len(out)); return out
 
+def direct_jobicy(kind):
+    """Use Jobicy's documented public API instead of scraping its HTML pages."""
+    board = "Jobicy"
+    out, seen = [], set()
+    try:
+        r = S.get("https://jobicy.com/api/v2/remote-jobs",
+                  params={"count": 200, "geo": "anywhere"},
+                  headers=hdr(), timeout=20)
+        if r.status_code != 200:
+            board_stat(board, "HTTP_" + str(r.status_code))
+            print(f"[{board} API] HTTP {r.status_code}", flush=True)
+            return out
+        data = r.json()
+        for x in data.get("jobs", []):
+            title = clean(x.get("jobTitle"))
+            desc = BeautifulSoup(x.get("jobDescription") or x.get("jobExcerpt") or "",
+                                 "html.parser").get_text(" ", strip=True)
+            if not accept_job(title, desc):
+                continue
+            url = clean(x.get("url"))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            geo = clean(x.get("jobGeo")) or "Remote / Worldwide"
+            out.append(make_job(title, clean(x.get("companyName")), geo, True,
+                                board, url, clean(x.get("pubDate")), desc, kind))
+    except (requests.RequestException, ValueError, TypeError) as e:
+        board_stat(board, "ERROR")
+        print(f"[{board} API] {type(e).__name__}: {str(e)[:160]}", flush=True)
+    board_stat(board, "FOUND", len(out))
+    print(f"[{board} API] found={len(out)}", flush=True)
+    return out
+
+
+def direct_remoteok_api(kind):
+    """Use Remote OK's published JSON feed, with source attribution in each row."""
+    board = "Remote OK"
+    out, seen = [], set()
+    try:
+        r = S.get("https://remoteok.com/api", headers=hdr(), timeout=20)
+        if r.status_code != 200:
+            board_stat(board, "API_HTTP_" + str(r.status_code))
+            print(f"[{board} API] HTTP {r.status_code}", flush=True)
+            return out
+        data = r.json()
+        if not isinstance(data, list):
+            board_stat(board, "API_BAD_FORMAT")
+            return out
+        for x in data:
+            if not isinstance(x, dict) or not x.get("position"):
+                continue
+            title = clean(x.get("position"))
+            desc = BeautifulSoup(x.get("description") or "", "html.parser").get_text(" ", strip=True)
+            if not accept_job(title, desc):
+                continue
+            url = clean(x.get("url"))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            company = clean(x.get("company"))
+            age = clean(x.get("date"))
+            tags = clean(" ".join(x.get("tags") or []))
+            out.append(make_job(title, company, "Remote / Worldwide", True, board,
+                                url, age, (desc + " " + tags).strip(), kind))
+    except (requests.RequestException, ValueError, TypeError) as e:
+        board_stat(board, "API_ERROR")
+        print(f"[{board} API] {type(e).__name__}: {str(e)[:160]}", flush=True)
+    board_stat(board, "API_FOUND", len(out))
+    print(f"[{board} API] found={len(out)}", flush=True)
+    return out
+
+
 def same_board(url, domain):
     h=host(url)
     return h==domain or h.endswith("." + domain)
@@ -699,6 +771,10 @@ def public_web_jobs():
         if remote:
             tasks.append(("Himalayas",lambda k=kind:direct_himalayas(k)))
             tasks.append(("Remotive",lambda k=kind:direct_remotive(k)))
+            # Public APIs are queried once per run and replace fragile HTML-only access.
+            if kind == "WORLDWIDE_REMOTE":
+                tasks.append(("Jobicy",lambda k=kind:direct_jobicy(k)))
+                tasks.append(("Remote OK API",lambda k=kind:direct_remoteok_api(k)))
         for board,domain in JOB_BOARD_SEARCHES:
             tasks.append((board,lambda b=board,d=domain,k=kind,r=remote:direct_board_search(b,d,k,r)))
     out=[];seen=set()
