@@ -27,6 +27,8 @@ SEARCH_CACHE = {}
 SEARCH_CACHE_LOCK = threading.Lock()
 PAGE_CACHE = {}
 PAGE_CACHE_LOCK = threading.Lock()
+PAGE_HOST_LOCKS = {}
+PAGE_BLOCKED_HOSTS = set()
 PATHS = [
     "", "/contact", "/contact-us", "/contactus", "/about", "/about-us", "/team",
     "/our-team", "/company", "/offices", "/locations", "/careers", "/career",
@@ -86,25 +88,35 @@ def blocked(url):
     return not h or any(h == x or h.endswith("." + x) for x in BLOCKED_HOSTS)
 
 def get(url):
-    """Fetch each public page at most once per run; avoid duplicate crawl requests."""
+    """Cache public pages and stop crawling a host after access/rate-limit denials."""
     key = clean(url).split("#", 1)[0]
+    h = host(key)
     with PAGE_CACHE_LOCK:
-        if key in PAGE_CACHE:
-            return PAGE_CACHE[key]
-    result = ("", key)
-    try:
-        r = session().get(key, timeout=TIMEOUT, allow_redirects=True)
-        if r.status_code == 200 and r.text:
-            result = (r.text, r.url)
-        elif r.status_code in (401, 403, 429):
-            print(f"[HTTP SKIP] {r.status_code} {host(r.url or key)}", flush=True)
-        elif r.status_code in (404, 410, 503):
-            print(f"[HTTP SKIP] {r.status_code} {key}", flush=True)
-    except requests.RequestException as exc:
-        print(f"[HTTP ERROR] {type(exc).__name__} {key}", flush=True)
-    with PAGE_CACHE_LOCK:
-        PAGE_CACHE[key] = result
-    return result
+        host_lock = PAGE_HOST_LOCKS.setdefault(h, threading.Lock())
+    with host_lock:
+        with PAGE_CACHE_LOCK:
+            if key in PAGE_CACHE:
+                return PAGE_CACHE[key]
+            if h in PAGE_BLOCKED_HOSTS:
+                return ("", key)
+        result = ("", key)
+        try:
+            r = session().get(key, timeout=TIMEOUT, allow_redirects=True)
+            final_host = host(r.url or key)
+            if r.status_code == 200 and r.text:
+                result = (r.text, r.url)
+            elif r.status_code in (401, 403, 429):
+                with PAGE_CACHE_LOCK:
+                    PAGE_BLOCKED_HOSTS.add(h)
+                    PAGE_BLOCKED_HOSTS.add(final_host)
+                print(f"[HTTP SKIP HOST] {r.status_code} {h}; using other sources", flush=True)
+            elif r.status_code in (404, 410, 503):
+                print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
+        except requests.RequestException as exc:
+            print(f"[HTTP ERROR] {type(exc).__name__} {key}", flush=True)
+        with PAGE_CACHE_LOCK:
+            PAGE_CACHE[key] = result
+        return result
 
 def search(q, limit=12):
     """Search public indexes with graceful fallbacks and per-run query caching."""
