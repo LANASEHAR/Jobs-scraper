@@ -20,6 +20,7 @@ S = requests.Session()
 FETCH_CACHE = {}
 FETCH_CACHE_LOCK = threading.Lock()
 BLOCKED_HOSTS_RUN = set()
+HOST_LOCKS = {}
 
 SEARCHES = [
     ("Customer Success", ["customer success manager","customer success","client success","client experience","customer onboarding","customer enablement","customer experience manager"]),
@@ -182,46 +183,49 @@ def make_job(title, company, loc, remote, source, url, age="", desc="", kind=Non
     }
 
 def fetch(url, timeout=10, retries=1):
-    """Fetch public pages once per run; stop hammering hosts returning access/rate limits."""
+    """Serialize requests per host, cache responses, and stop on access/rate limits."""
     if not budget_ok():
         return None
     key = url.split("#", 1)[0]
     h = host(key)
     with FETCH_CACHE_LOCK:
-        if key in FETCH_CACHE:
-            return FETCH_CACHE[key]
-        if h in BLOCKED_HOSTS_RUN:
-            return None
-
-    result = None
-    for attempt in range(retries + 1):
-        try:
-            r = S.get(key, headers=hdr(), timeout=timeout, allow_redirects=True)
-            if r.status_code == 200 and r.text:
-                result = r.text
-                break
-            stat("HTTP", str(r.status_code))
-            # A 403/429 is a host-level signal: stop sending requests to that host this run.
-            if r.status_code in (401, 403, 429):
-                with FETCH_CACHE_LOCK:
-                    BLOCKED_HOSTS_RUN.add(host(r.url or key))
-                    FETCH_CACHE[key] = None
-                print(f"[HTTP SKIP HOST] {r.status_code} {host(r.url or key)}; using other sources", flush=True)
+        host_lock = HOST_LOCKS.setdefault(h, threading.Lock())
+    with host_lock:
+        with FETCH_CACHE_LOCK:
+            if key in FETCH_CACHE:
+                return FETCH_CACHE[key]
+            if h in BLOCKED_HOSTS_RUN:
                 return None
-            # Missing/temporarily unavailable URLs are cached to prevent repeated noisy requests.
-            if r.status_code in (404, 410, 503):
-                print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
-                break
-            print(f"[HTTP] {r.status_code} {key}", flush=True)
-        except requests.RequestException as e:
-            stat("HTTP", "exception")
-            print(f"[HTTP ERROR] {type(e).__name__} {key}", flush=True)
-        if attempt < retries:
-            time.sleep(min(3, 1.2 ** attempt))
 
-    with FETCH_CACHE_LOCK:
-        FETCH_CACHE[key] = result
-    return result
+        result = None
+        for attempt in range(retries + 1):
+            try:
+                r = S.get(key, headers=hdr(), timeout=timeout, allow_redirects=True)
+                final_host = host(r.url or key)
+                if r.status_code == 200 and r.text:
+                    result = r.text
+                    break
+                stat("HTTP", str(r.status_code))
+                if r.status_code in (401, 403, 429):
+                    with FETCH_CACHE_LOCK:
+                        BLOCKED_HOSTS_RUN.add(h)
+                        BLOCKED_HOSTS_RUN.add(final_host)
+                        FETCH_CACHE[key] = None
+                    print(f"[HTTP SKIP HOST] {r.status_code} {h}; using other sources", flush=True)
+                    return None
+                if r.status_code in (404, 410, 503):
+                    print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
+                    break
+                print(f"[HTTP] {r.status_code} {key}", flush=True)
+            except requests.RequestException as e:
+                stat("HTTP", "exception")
+                print(f"[HTTP ERROR] {type(e).__name__} {key}", flush=True)
+            if attempt < retries:
+                time.sleep(min(3, 1.2 ** attempt))
+
+        with FETCH_CACHE_LOCK:
+            FETCH_CACHE[key] = result
+        return result
 
 def web_search(q, limit=20):
     """Use several public index formats; one blocked endpoint must not empty discovery."""
