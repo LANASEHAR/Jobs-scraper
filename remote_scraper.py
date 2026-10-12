@@ -749,7 +749,7 @@ def enrich_one(j):
         "company_site":site,
         "emails_rh":" / ".join(good),
         "deep_status":"DONE" if pages else "SITE_FOUND_NO_PAGES",
-        "email_status":"FOUND" if good else "NO_EMAIL",
+        "email_status":"FOUND" if good else "PENDING",
         "email_source":"Verified public company website" if good else "",
     }
 
