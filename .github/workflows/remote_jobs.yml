@@ -11,12 +11,13 @@ on:
   workflow_dispatch:
   # Two scheduled runs per day; allow discovery and email enrichment to finish.
   schedule:
-    - cron: '0 5 * * *'
-    - cron: '0 17 * * *'
+    - cron: '13 5 * * *'
+    - cron: '37 17 * * *'
 
 concurrency:
   group: remote-jobs-scraper
-  cancel-in-progress: true
+  # Keep the active scrape running when another trigger arrives.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
     name: Jobs + spontaneous company discovery
     runs-on: ubuntu-latest
     # Discovery can use up to 40 minutes; the second pass needs its own budget.
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -38,13 +39,27 @@ jobs:
       - name: Validate scraper syntax
         run: python -m py_compile remote_scraper.py email_enricher.py
       - name: Discover jobs, then hunt Casablanca companies
+        timeout-minutes: 50
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
-        run: python remote_scraper.py --mode scrape
+        run: |
+          for attempt in 1 2 3; do
+            echo "Discovery attempt $attempt/3"
+            python remote_scraper.py --mode scrape && exit 0
+            [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
 
       - name: Second-pass company and email enrichment
+        timeout-minutes: 90
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
           PYTHONUNBUFFERED: '1'
-        run: python email_enricher.py
+        run: |
+          for attempt in 1 2 3; do
+            echo "Email enrichment attempt $attempt/3"
+            python email_enricher.py && exit 0
+            [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
