@@ -224,64 +224,76 @@ def fetch(url, timeout=10, retries=1):
     return result
 
 def web_search(q, limit=20):
-    """Use a bounded public-index fanout. Cache identical queries and never let one engine block the run."""
-    key=(clean(q),int(limit))
+    """Use several public index formats; one blocked endpoint must not empty discovery."""
+    key = (clean(q), int(limit))
     with SEARCH_CACHE_LOCK:
-        cached=SEARCH_CACHE.get(key)
+        cached = SEARCH_CACHE.get(key)
     if cached is not None:
         return list(cached)
 
-    providers=[
-        ("Bing","https://www.bing.com/search?q="+quote_plus(q)),
-        ("DDG","https://html.duckduckgo.com/html/?q="+quote_plus(q)),
+    providers = [
+        ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q)),
+        ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q)),
+        ("Bing", "https://www.bing.com/search?q=" + quote_plus(q)),
+        ("DDG", "https://html.duckduckgo.com/html/?q=" + quote_plus(q)),
+        ("Google", "https://www.google.com/search?q=" + quote_plus(q)),
     ]
-    merged=[]; seen=set()
-    for name,url in providers:
-        if not budget_ok(): break
+    merged, seen = [], set()
+    for name, url in providers:
+        if len(merged) >= limit or not budget_ok():
+            break
         try:
-            r=S.get(url,headers=hdr(),timeout=7,allow_redirects=True)
+            r = S.get(url, headers=hdr(), timeout=7, allow_redirects=True)
             if r.status_code != 200 or not r.text:
-                stat("Search",f"{name}_{r.status_code}")
+                stat("Search", f"{name.replace(' ', '_')}_{r.status_code}")
                 continue
-            soup=BeautifulSoup(r.text,"html.parser")
-            if name=="Bing":
-                links=[(clean(a.get_text(" ",strip=True)),a.get("href",""))
-                       for a in soup.select("li.b_algo h2 a[href]")]
+            soup = BeautifulSoup(r.text, "xml" if name == "Bing RSS" else "html.parser")
+            links = []
+            if name == "Bing RSS":
+                for item in soup.find_all("item"):
+                    title_node, link_node = item.find("title"), item.find("link")
+                    title = clean(title_node.get_text(" ", strip=True) if title_node else "")
+                    u = clean(link_node.get_text(strip=True) if link_node else "")
+                    if title and u:
+                        links.append((title, u))
+            elif name == "Bing":
+                links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                         for a in soup.select("li.b_algo h2 a[href]")]
+            elif name in ("DDG", "DDG Lite"):
+                links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                         for a in soup.select("a.result__a[href], a.result-link[href]")]
+                if not links and name == "DDG Lite":
+                    links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                             for a in soup.select("a[href]")]
             else:
-                links=[(clean(a.get_text(" ",strip=True)),a.get("href",""))
-                       for a in soup.select("a.result__a[href],a.result-link[href]")]
-            for title,u in links:
-                if not u.startswith("http") or not title: continue
-                u=u.split("#",1)[0]
-                if u in seen: continue
-                seen.add(u); merged.append((title,u))
-                if len(merged)>=limit: break
-        except requests.RequestException:
-            stat("Search",f"{name}_exception")
-        if len(merged)>=limit: break
-
-    # Google is a fallback only when both primary indexes returned too little.
-    if len(merged) < min(5,limit) and budget_ok():
-        try:
-            url="https://www.google.com/search?q="+quote_plus(q)
-            r=S.get(url,headers=hdr(),timeout=7,allow_redirects=True)
-            if r.status_code==200 and r.text:
-                soup=BeautifulSoup(r.text,"html.parser")
                 for a in soup.select("a[href]"):
-                    u=a.get("href","")
-                    title=clean(a.get_text(" ",strip=True))
-                    if not u.startswith("http") or not title: continue
-                    u=u.split("#",1)[0]
-                    if u in seen: continue
-                    seen.add(u); merged.append((title,u))
-                    if len(merged)>=limit: break
-        except requests.RequestException:
-            stat("Search","Google_exception")
+                    u = a.get("href", "")
+                    if u.startswith("/url?"):
+                        from urllib.parse import parse_qs
+                        u = parse_qs(urlparse(u).query).get("q", [""])[0]
+                    links.append((clean(a.get_text(" ", strip=True)), u))
 
-    result=merged[:limit]
+            for title, u in links:
+                u = clean(u).split("#", 1)[0]
+                if u.startswith("//"):
+                    u = "https:" + u
+                if not u.startswith(("http://", "https://")) or not title or u in seen:
+                    continue
+                if any(x in host(u) for x in ("google.com", "bing.com", "duckduckgo.com")):
+                    continue
+                seen.add(u)
+                merged.append((title, u))
+                if len(merged) >= limit:
+                    break
+        except requests.RequestException as e:
+            stat("Search", f"{name.replace(' ', '_')}_exception")
+            print(f"[SEARCH WARNING] {name} {type(e).__name__}", flush=True)
+
+    result = merged[:limit]
     with SEARCH_CACHE_LOCK:
-        SEARCH_CACHE[key]=list(result)
-    if result: stat("Search","merged")
+        SEARCH_CACHE[key] = list(result)
+    if result:
+        stat("Search", "merged", len(result))
     return result
 
 def parse_linkedin(html, remote, kind):
