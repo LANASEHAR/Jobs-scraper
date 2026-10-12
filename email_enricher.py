@@ -4,7 +4,7 @@ Never guesses addresses, bypasses access controls, or submits forms.
 """
 import json, os, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,6 +22,8 @@ BLOCKED_HOSTS = {
     "duckduckgo.com", "google.com", "bing.com", "youtube.com"
 }
 PLACEHOLDERS = {"unknown", "indeed employer", "linkedin employer", "company", "employer"}
+SEARCH_CACHE = {}
+SEARCH_CACHE_LOCK = threading.Lock()
 PATHS = [
     "", "/contact", "/contact-us", "/contactus", "/about", "/about-us", "/team",
     "/our-team", "/company", "/offices", "/locations", "/careers", "/career",
@@ -90,30 +92,70 @@ def get(url):
     return "", url
 
 def search(q, limit=12):
+    """Search public indexes with graceful fallbacks and per-run query caching."""
+    key = (clean(q), int(limit))
+    with SEARCH_CACHE_LOCK:
+        cached = SEARCH_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+
     out, seen = [], set()
-    # Try both public search engines; failures on one do not stop the other.
     engines = [
-        "https://www.bing.com/search?q=" + quote_plus(q),
-        "https://html.duckduckgo.com/html/?q=" + quote_plus(q)
+        ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q)),
+        ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q)),
+        ("Bing HTML", "https://www.bing.com/search?q=" + quote_plus(q)),
+        ("Google", "https://www.google.com/search?q=" + quote_plus(q)),
     ]
-    for engine in engines:
+    for engine, url in engines:
+        if len(out) >= limit:
+            break
         try:
-            r = session().get(engine, timeout=9)
-            if r.status_code != 200:
+            r = session().get(url, timeout=9, allow_redirects=True)
+            if r.status_code != 200 or not r.text:
                 continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            for sel in ('li.b_algo h2 a[href]', 'a.result__a[href]', 'a.result-link[href]'):
-                for a in soup.select(sel):
-                    u = a.get("href", "").split("#", 1)[0]
-                    if not u.startswith(("http://", "https://")) or u in seen or blocked(u):
-                        continue
-                    seen.add(u)
-                    out.append((clean(a.get_text(" ", strip=True)), u))
-                    if len(out) >= limit:
-                        return out
-        except requests.RequestException:
-            continue
-    return out
+            soup = BeautifulSoup(r.text, "xml" if engine == "Bing RSS" else "html.parser")
+            links = []
+            if engine == "Bing RSS":
+                for item in soup.find_all("item"):
+                    title = clean(item.find("title").get_text(" ", strip=True) if item.find("title") else "")
+                    link = clean(item.find("link").get_text(strip=True) if item.find("link") else "")
+                    if title and link:
+                        links.append((title, link))
+            elif engine == "Bing HTML":
+                links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                         for a in soup.select("li.b_algo h2 a[href]")]
+            elif engine == "DDG Lite":
+                links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                         for a in soup.select("a.result-link[href], a.result__a[href]")]
+                if not links:
+                    links = [(clean(a.get_text(" ", strip=True)), a.get("href", ""))
+                             for a in soup.select("a[href]")]
+            else:
+                for a in soup.select("a[href]"):
+                    href = a.get("href", "")
+                    if href.startswith("/url?"):
+                        href = parse_qs(urlparse(href).query).get("q", [""])[0]
+                    links.append((clean(a.get_text(" ", strip=True)), href))
+
+            for title, u in links:
+                u = clean(u).split("#", 1)[0]
+                if u.startswith("//"):
+                    u = "https:" + u
+                if not u.startswith(("http://", "https://")) or blocked(u) or u in seen:
+                    continue
+                if any(x in urlparse(u).netloc.lower() for x in ("google.com", "bing.com", "duckduckgo.com")):
+                    continue
+                seen.add(u)
+                out.append((title or host(u), u))
+                if len(out) >= limit:
+                    break
+        except requests.RequestException as exc:
+            print(f"[SEARCH WARNING] {engine} {type(exc).__name__}", flush=True)
+
+    result = out[:limit]
+    with SEARCH_CACHE_LOCK:
+        SEARCH_CACHE[key] = list(result)
+    return result
 
 def reliable_company(v):
     v = clean(v)
