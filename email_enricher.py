@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 WEBHOOK = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "").strip()
 TIMEOUT = 8
 WORKERS = max(4, min(12, int(os.getenv("EMAIL_WORKERS", "8"))))
-MAX_SITE_PAGES = max(10, min(40, int(os.getenv("EMAIL_MAX_SITE_PAGES", "25"))))
-MAX_COMPANIES_PER_RUN = max(25, min(200, int(os.getenv("EMAIL_MAX_COMPANIES_PER_RUN", "100"))))
+MAX_SITE_PAGES = max(8, min(20, int(os.getenv("EMAIL_MAX_SITE_PAGES", "14"))))
+MAX_COMPANIES_PER_RUN = max(20, min(120, int(os.getenv("EMAIL_MAX_COMPANIES_PER_RUN", "60"))))
 PENDING_SCAN_PER_SHEET = max(250, min(5000, int(os.getenv("EMAIL_PENDING_SCAN_PER_SHEET", "1000"))))
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}", re.I)
 BAD_DOMAINS = {"example.com", "sentry.io", "schema.org", "google.com", "facebook.com", "linkedin.com"}
@@ -25,6 +25,8 @@ BLOCKED_HOSTS = {
 PLACEHOLDERS = {"unknown", "indeed employer", "linkedin employer", "company", "employer"}
 SEARCH_CACHE = {}
 SEARCH_CACHE_LOCK = threading.Lock()
+PAGE_CACHE = {}
+PAGE_CACHE_LOCK = threading.Lock()
 PATHS = [
     "", "/contact", "/contact-us", "/contactus", "/about", "/about-us", "/team",
     "/our-team", "/company", "/offices", "/locations", "/careers", "/career",
@@ -84,17 +86,30 @@ def blocked(url):
     return not h or any(h == x or h.endswith("." + x) for x in BLOCKED_HOSTS)
 
 def get(url):
+    """Fetch each public page at most once per run; avoid duplicate crawl requests."""
+    key = clean(url).split("#", 1)[0]
+    with PAGE_CACHE_LOCK:
+        if key in PAGE_CACHE:
+            return PAGE_CACHE[key]
+    result = ("", key)
     try:
-        r = session().get(url, timeout=TIMEOUT, allow_redirects=True)
+        r = session().get(key, timeout=TIMEOUT, allow_redirects=True)
         if r.status_code == 200 and r.text:
-            return r.text, r.url
-    except requests.RequestException:
-        pass
-    return "", url
+            result = (r.text, r.url)
+        elif r.status_code in (401, 403, 429):
+            print(f"[HTTP SKIP] {r.status_code} {host(r.url or key)}", flush=True)
+        elif r.status_code in (404, 410, 503):
+            print(f"[HTTP SKIP] {r.status_code} {key}", flush=True)
+    except requests.RequestException as exc:
+        print(f"[HTTP ERROR] {type(exc).__name__} {key}", flush=True)
+    with PAGE_CACHE_LOCK:
+        PAGE_CACHE[key] = result
+    return result
 
 def search(q, limit=12):
     """Search public indexes with graceful fallbacks and per-run query caching."""
-    key = (clean(q), int(limit))
+    limit = max(1, min(int(limit), 6))
+    key = (clean(q), limit)
     with SEARCH_CACHE_LOCK:
         cached = SEARCH_CACHE.get(key)
     if cached is not None:
@@ -105,7 +120,6 @@ def search(q, limit=12):
         ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q)),
         ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q)),
         ("Bing HTML", "https://www.bing.com/search?q=" + quote_plus(q)),
-        ("Google", "https://www.google.com/search?q=" + quote_plus(q)),
     ]
     for engine, url in engines:
         if len(out) >= limit:
@@ -244,9 +258,9 @@ def discover_site_emails(site, company):
         f'site:{site_host} email', f'site:{site_host} contact',
         f'site:{site_host} "@{site_host}"'
     ]
-    for q in queries:
-        # Keep a few high-ranking results per query to avoid unbounded crawling.
-        for _, u in search(q, 8)[:3]:
+    for q in queries[:4]:
+        # A couple of public results per query are enough; site crawl covers more pages.
+        for _, u in search(q, 5)[:2]:
             # Search results can include third-party pages about the company;
             # inspect them for publicly published emails, but never treat them as the official site.
             html, _ = get(u)
@@ -296,13 +310,15 @@ def enrich(job):
         site = official_site(company)
     found = discover_site_emails(site, company)
     # Broad fallback search also works when no official website can be identified.
-    if reliable_company(company):
-        for q in (f'"{company}" email', f'"{company}" contact email',
-                  f'"{company}" "@"', f'"{company}" mailto'):
-            for _, u in search(q, 8)[:3]:
+    if reliable_company(company) and not found:
+        # Only run broad fallback if the official-site pass found nothing.
+        for q in (f'"{company}" email', f'"{company}" contact email'):
+            for _, u in search(q, 5)[:2]:
                 html, _ = get(u)
                 if html:
                     found |= emails_from(html)
+            if found:
+                break
     good = sorted(found)
     return {
         "id": clean(job.get("ID", job.get("id", ""))),
