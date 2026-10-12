@@ -1,0 +1,49 @@
+name: Spontaneous Company + Public Email Discovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 6 * * *'
+    - cron: '11 18 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'spontaneous_company_discovery.py'
+      - '.github/workflows/spontaneous_contacts.yml'
+      - 'requirements.txt'
+
+concurrency:
+  group: spontaneous-company-discovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Find companies without job vacancies
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
+      PYTHONUNBUFFERED: '1'
+      SPONTANEOUS_MAX_COMPANIES: '100'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Validate Python syntax
+        run: python -m py_compile spontaneous_company_discovery.py
+      - name: Discover companies and public contact emails
+        run: |
+          for attempt in 1 2 3; do
+            echo "Spontaneous discovery attempt $attempt/3"
+            python spontaneous_company_discovery.py && exit 0
+            [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
+          done
+          exit 1
