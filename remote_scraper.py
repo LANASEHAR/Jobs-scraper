@@ -331,6 +331,7 @@ def debug_event(board, event, **data):
         BOARD_STATS[board]["DEBUG_EVENTS"].append(payload)
 
 def linkedin_query(keywords, location, remote, kind):
+    global LINKEDIN_API_DISABLED
     out=[]; seen=set()
     params=f"?keywords={quote_plus(keywords)}&location={quote_plus(location)}&f_TPR=r604800&start=0"
     if remote: params += "&f_WT=2"
