@@ -10,9 +10,10 @@ import requests
 from bs4 import BeautifulSoup
 
 WEBHOOK = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "").strip()
-TIMEOUT = 12
+TIMEOUT = 8
 WORKERS = max(4, min(12, int(os.getenv("EMAIL_WORKERS", "8"))))
-MAX_SITE_PAGES = max(30, min(100, int(os.getenv("EMAIL_MAX_SITE_PAGES", "70"))))
+MAX_SITE_PAGES = max(10, min(40, int(os.getenv("EMAIL_MAX_SITE_PAGES", "25"))))
+MAX_COMPANIES_PER_RUN = max(25, min(200, int(os.getenv("EMAIL_MAX_COMPANIES_PER_RUN", "100"))))
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}", re.I)
 BAD_DOMAINS = {"example.com", "sentry.io", "schema.org", "google.com", "facebook.com", "linkedin.com"}
 BLOCKED_HOSTS = {
@@ -198,13 +199,12 @@ def discover_site_emails(site, company):
     queries = [
         f'"{company}" email', f'"{company}" contact email',
         f'"{company}" "@"', f'"{company}" mailto',
-        f'"{company}" phone email', f'"{company}" sales contact',
         f'site:{site_host} email', f'site:{site_host} contact',
-        f'site:{site_host} "@{site_host}"',
-        f'site:{site_host} mailto'
+        f'site:{site_host} "@{site_host}"'
     ]
     for q in queries:
-        for _, u in search(q, 12):
+        # Keep a few high-ranking results per query to avoid unbounded crawling.
+        for _, u in search(q, 8)[:3]:
             # Search results can include third-party pages about the company;
             # inspect them for publicly published emails, but never treat them as the official site.
             html, _ = get(u)
@@ -257,7 +257,7 @@ def enrich(job):
     if reliable_company(company):
         for q in (f'"{company}" email', f'"{company}" contact email',
                   f'"{company}" "@"', f'"{company}" mailto'):
-            for _, u in search(q, 10):
+            for _, u in search(q, 8)[:3]:
                 html, _ = get(u)
                 if html:
                     found |= emails_from(html)
@@ -276,26 +276,50 @@ def enrich(job):
 def webhook(payload):
     if not WEBHOOK:
         raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    r = session().post(WEBHOOK, json=payload, timeout=90,
-                       headers={"Content-Type": "application/json"})
-    r.raise_for_status()
-    data = r.json()
-    if data.get("status") != "success":
-        raise RuntimeError(f"Unexpected Google Sheets webhook response: {data!r}")
-    return data
+    last_error = None
+    for attempt in range(3):
+        try:
+            r = session().post(WEBHOOK, json=payload, timeout=45,
+                               headers={"Content-Type": "application/json"})
+            r.raise_for_status()
+            data = r.json()
+            if data.get("status") != "success":
+                raise RuntimeError(f"Unexpected Google Sheets webhook response: {data!r}")
+            return data
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"Google Sheets webhook failed after 3 attempts: {last_error}")
 
 def main():
-    all_jobs, seen = [], set()
-    for sheet in ("Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous"):
-        data = webhook({"mode": "pending", "limit": 5000, "sheet": sheet})
+    sheets = ("Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous")
+    by_sheet, seen = {}, set()
+    # Bound each run and interleave sheets so one large board cannot starve others.
+    for sheet in sheets:
+        data = webhook({"mode": "pending", "limit": min(5000, MAX_COMPANIES_PER_RUN), "sheet": sheet})
+        rows = []
         for job in data.get("jobs", []):
             key = (sheet, clean(job.get("ID", job.get("id", ""))))
             if key in seen:
                 continue
             seen.add(key)
             job["_sheet"] = sheet
-            all_jobs.append(job)
-    print(f"[EMAIL ENRICH] pending={len(all_jobs)} workers={WORKERS} pages_per_site<={MAX_SITE_PAGES}", flush=True)
+            rows.append(job)
+        by_sheet[sheet] = rows
+    all_jobs = []
+    cursor = 0
+    while len(all_jobs) < MAX_COMPANIES_PER_RUN:
+        added = False
+        for sheet in sheets:
+            rows = by_sheet.get(sheet, [])
+            if cursor < len(rows) and len(all_jobs) < MAX_COMPANIES_PER_RUN:
+                all_jobs.append(rows[cursor])
+                added = True
+        if not added:
+            break
+        cursor += 1
+    print(f"[EMAIL ENRICH] pending={len(all_jobs)} cap={MAX_COMPANIES_PER_RUN} workers={WORKERS} pages_per_site<={MAX_SITE_PAGES}", flush=True)
     updates, found_count, error_count = [], 0, 0
 
     def process(index, job):
@@ -310,7 +334,20 @@ def main():
             idx, update, error = future.result()
             if error:
                 error_count += 1
+                job = all_jobs[idx - 1]
+                failed = {
+                    "id": clean(job.get("ID", job.get("id", ""))),
+                    "sheet": clean(job.get("_sheet", job.get("sheet", ""))),
+                    "deep_status": "ERROR",
+                    "email_status": "ERROR",
+                    "email_source": clean(error)[:180]
+                }
+                if failed["id"]:
+                    updates.append(failed)
                 print(f"[EMAIL ERROR] row={idx}: {error}", flush=True)
+                if len(updates) >= 25:
+                    webhook({"mode": "enrich", "updates": updates})
+                    updates = []
                 continue
             if not update["id"]:
                 continue
