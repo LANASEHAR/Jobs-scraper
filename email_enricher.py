@@ -310,7 +310,7 @@ def enrich(job):
         "company_site": site,
         "emails_rh": " / ".join(good),
         "deep_status": "DONE" if (site or company) else "NO_COMPANY",
-        "email_status": "FOUND" if good else ("NO_EMAIL" if company else "NO_COMPANY"),
+        "email_status": "FOUND" if good else ("PENDING" if company else "NO_COMPANY"),
         "email_source": "Public company website / public web" if good else ""
     }
 
