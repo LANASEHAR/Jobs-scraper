@@ -19,8 +19,7 @@ BAD_DOMAINS = {"example.com", "sentry.io", "schema.org", "google.com", "facebook
 BLOCKED_HOSTS = {
     "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
     "indeed.com", "glassdoor.com", "crunchbase.com", "wikipedia.org",
-    "duckduckgo.com", "google.com", "bing.com", "youtube.com", "rekrute.com",
-    "emploi.ma", "bayt.com", "novojob.com"
+    "duckduckgo.com", "google.com", "bing.com", "youtube.com"
 }
 PLACEHOLDERS = {"unknown", "indeed employer", "linkedin employer", "company", "employer"}
 PATHS = [
