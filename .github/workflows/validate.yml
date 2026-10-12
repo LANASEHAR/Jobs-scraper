@@ -1,0 +1,46 @@
+name: Validate Scraper Code
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/validate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Python syntax validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile all Python files
+        run: |
+          python - <<'PY'
+          import pathlib, py_compile, sys
+          files = sorted(pathlib.Path('.').rglob('*.py'))
+          if not files:
+              raise SystemExit('No Python files found')
+          failures = []
+          for path in files:
+              try:
+                  py_compile.compile(str(path), doraise=True)
+                  print(f'[OK] {path}')
+              except py_compile.PyCompileError as exc:
+                  failures.append((str(path), str(exc)))
+          if failures:
+              for path, error in failures:
+                  print(f'[ERROR] {path}: {error}', file=sys.stderr)
+              raise SystemExit(1)
+          print(f'Validated {len(files)} Python files.')
+          PY
