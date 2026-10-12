@@ -1,42 +1,48 @@
-"""Second-pass company/email enrichment for the remote jobs scraper.
-
-This module is deliberately company-first:
-1. Recover the real employer from the job detail page when the board result
-   contains no reliable company name.
-2. Find the employer's official website.
-3. Search the public web for published company email addresses.
-4. Crawl contact/careers/legal pages and mailto links.
-5. Never invent an email or company name.
+"""High-coverage public company email discovery.
+Collects any genuine publicly published company email, not only HR/recruitment.
+Never guesses addresses, bypasses access controls, or submits forms.
 """
-import json, os, re, time
+import json, os, re, threading, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote_plus, urljoin, urlparse
+
 import requests
 from bs4 import BeautifulSoup
 
 WEBHOOK = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "").strip()
 TIMEOUT = 12
+WORKERS = max(4, min(12, int(os.getenv("EMAIL_WORKERS", "8"))))
+MAX_SITE_PAGES = max(30, min(100, int(os.getenv("EMAIL_MAX_SITE_PAGES", "70"))))
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}", re.I)
-BAD_DOMAINS = {"example.com","sentry.io","schema.org","google.com","facebook.com","linkedin.com"}
+BAD_DOMAINS = {"example.com", "sentry.io", "schema.org", "google.com", "facebook.com", "linkedin.com"}
 BLOCKED_HOSTS = {
-    "linkedin.com","facebook.com","instagram.com","twitter.com","x.com","indeed.com",
-    "glassdoor.com","crunchbase.com","wikipedia.org","duckduckgo.com","google.com",
-    "bing.com","youtube.com","rekrute.com","emploi.ma","bayt.com","novojob.com"
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "indeed.com", "glassdoor.com", "crunchbase.com", "wikipedia.org",
+    "duckduckgo.com", "google.com", "bing.com", "youtube.com", "rekrute.com",
+    "emploi.ma", "bayt.com", "novojob.com"
 }
-PLACEHOLDERS = {"unknown","indeed employer","linkedin employer","company","employer"}
-
-S = requests.Session()
-S.headers.update({
-    "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
-    "Accept-Language":"en-US,en;q=0.9,fr;q=0.8,de;q=0.7"
-})
-
+PLACEHOLDERS = {"unknown", "indeed employer", "linkedin employer", "company", "employer"}
 PATHS = [
-    "", "/contact", "/contact-us", "/contactus", "/careers", "/career", "/jobs",
-    "/join-us", "/work-with-us", "/recruitment", "/hr", "/human-resources",
-    "/about", "/en/contact", "/en/careers", "/fr/contact", "/fr/carriere",
-    "/fr/recrutement", "/de/kontakt", "/de/karriere", "/legal", "/imprint",
-    "/impressum", "/privacy", "/team"
+    "", "/contact", "/contact-us", "/contactus", "/about", "/about-us", "/team",
+    "/our-team", "/company", "/offices", "/locations", "/careers", "/career",
+    "/jobs", "/join-us", "/work-with-us", "/recruitment", "/hr",
+    "/human-resources", "/sales", "/support", "/customer-support", "/partners",
+    "/partnerships", "/press", "/media", "/newsroom", "/legal", "/privacy",
+    "/imprint", "/impressum", "/kontakt", "/karriere", "/bewerbung",
+    "/en/contact", "/en/careers", "/fr/contact", "/fr/carriere",
+    "/fr/recrutement", "/de/kontakt", "/de/karriere"
 ]
+_thread = threading.local()
+
+def session():
+    if not hasattr(_thread, "session"):
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,fr;q=0.8,de;q=0.7"
+        })
+        _thread.session = s
+    return _thread.session
 
 def clean(v):
     return re.sub(r"\s+", " ", str(v or "")).strip()
@@ -45,13 +51,12 @@ def valid_email(e):
     e = clean(e).lower().strip(" .;,<>\"'")
     if not EMAIL_RE.fullmatch(e):
         return False
-    domain = e.split("@",1)[1]
-    local = e.split("@",1)[0]
-    # Do not filter by department: contact/info/sales/support/privacy/security/etc.
-    # are all legitimate public addresses. Exclude only obvious system/bounce mailboxes.
+    local, domain = e.split("@", 1)
     if domain in BAD_DOMAINS:
         return False
-    if local in {"noreply","no-reply","donotreply","do-not-reply","mailer-daemon","postmaster"}:
+    if local in {"noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon", "postmaster"}:
+        return False
+    if ".." in e or domain.startswith(".") or domain.endswith("."):
         return False
     return True
 
@@ -61,7 +66,7 @@ def emails_from(html):
     soup = BeautifulSoup(text, "html.parser")
     found = set(EMAIL_RE.findall(text))
     for a in soup.select('a[href^="mailto:"]'):
-        found.add(a.get("href","")[7:].split("?",1)[0])
+        found.add(a.get("href", "")[7:].split("?", 1)[0])
     return {e.lower().strip(" .;,<>\"'") for e in found if valid_email(e)}
 
 def host(url):
@@ -71,13 +76,13 @@ def host(url):
     except Exception:
         return ""
 
-def blocked(h):
-    h = host(h)
-    return not h or any(h == x or h.endswith("."+x) for x in BLOCKED_HOSTS)
+def blocked(url):
+    h = host(url)
+    return not h or any(h == x or h.endswith("." + x) for x in BLOCKED_HOSTS)
 
 def get(url):
     try:
-        r = S.get(url, timeout=TIMEOUT, allow_redirects=True)
+        r = session().get(url, timeout=TIMEOUT, allow_redirects=True)
         if r.status_code == 200 and r.text:
             return r.text, r.url
     except requests.RequestException:
@@ -85,205 +90,246 @@ def get(url):
     return "", url
 
 def search(q, limit=12):
-    out=[]; seen=set()
-    for engine in (
-        "https://www.bing.com/search?q="+quote_plus(q),
-        "https://html.duckduckgo.com/html/?q="+quote_plus(q)
-    ):
+    out, seen = [], set()
+    # Try both public search engines; failures on one do not stop the other.
+    engines = [
+        "https://www.bing.com/search?q=" + quote_plus(q),
+        "https://html.duckduckgo.com/html/?q=" + quote_plus(q)
+    ]
+    for engine in engines:
         try:
-            r=S.get(engine, timeout=8)
-            if r.status_code != 200: continue
-            soup=BeautifulSoup(r.text,"html.parser")
-            selectors = ['li.b_algo h2 a[href]','a.result__a[href]','a.result-link[href]']
-            links=[]
-            for sel in selectors:
-                links.extend(soup.select(sel))
-            for a in links:
-                u=a.get("href","")
-                if not u.startswith("http"): continue
-                u=u.split("#",1)[0]
-                if u in seen: continue
-                seen.add(u); out.append((clean(a.get_text(" ",strip=True)),u))
-                if len(out)>=limit: return out
+            r = session().get(engine, timeout=9)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            for sel in ('li.b_algo h2 a[href]', 'a.result__a[href]', 'a.result-link[href]'):
+                for a in soup.select(sel):
+                    u = a.get("href", "").split("#", 1)[0]
+                    if not u.startswith(("http://", "https://")) or u in seen or blocked(u):
+                        continue
+                    seen.add(u)
+                    out.append((clean(a.get_text(" ", strip=True)), u))
+                    if len(out) >= limit:
+                        return out
         except requests.RequestException:
             continue
     return out
 
 def reliable_company(v):
-    v=clean(v)
+    v = clean(v)
     return bool(v) and v.lower() not in PLACEHOLDERS and len(v) >= 2
 
 def extract_company(html):
-    if not html: return ""
-    soup=BeautifulSoup(html,"html.parser")
-    # Prefer structured data because it is less likely to confuse navigation text
-    # with an employer name.
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "html.parser")
     for script in soup.select('script[type="application/ld+json"]'):
-        raw=script.string or script.get_text()
         try:
-            data=json.loads(raw)
+            data = json.loads(script.string or script.get_text())
         except Exception:
             continue
-        items=data if isinstance(data,list) else [data]
-        for obj in items:
-            if not isinstance(obj,dict): continue
-            typ=str(obj.get("@type","")).lower()
-            if "jobposting" in typ:
-                org=obj.get("hiringOrganization")
-                if isinstance(org,dict) and reliable_company(org.get("name")):
-                    return clean(org["name"])
+        stack = data if isinstance(data, list) else [data]
+        while stack:
+            obj = stack.pop()
+            if isinstance(obj, list):
+                stack.extend(obj)
+            elif isinstance(obj, dict):
+                if "jobposting" in str(obj.get("@type", "")).lower():
+                    org = obj.get("hiringOrganization")
+                    if isinstance(org, dict) and reliable_company(org.get("name")):
+                        return clean(org["name"])
+                stack.extend(v for v in obj.values() if isinstance(v, (dict, list)))
     for meta in soup.select('meta[property="og:site_name"],meta[name="application-name"]'):
-        val=clean(meta.get("content",""))
-        if reliable_company(val): return val
-    for sel in (
-        '[class*="company"]','[class*="employer"]','[class*="entreprise"]',
-        '[class*="recruiter"]','[class*="organization"]','[data-company]'
-    ):
-        node=soup.select_one(sel)
+        val = clean(meta.get("content", ""))
+        if reliable_company(val):
+            return val
+    for sel in ('[class*="company"]', '[class*="employer"]', '[class*="entreprise"]',
+                '[class*="organization"]', '[data-company]'):
+        node = soup.select_one(sel)
         if node:
-            val=clean(node.get("data-company") or node.get_text(" ",strip=True))
-            if reliable_company(val) and len(val)<160: return val
+            val = clean(node.get("data-company") or node.get_text(" ", strip=True))
+            if reliable_company(val) and len(val) < 160:
+                return val
     return ""
 
 def recover_company(job):
-    current=clean(job.get("Entreprise",""))
-    if reliable_company(current): return current
-    url=clean(job.get("Lien",""))
-    if not url: return ""
-    html,_=get(url)
-    return extract_company(html)
+    current = clean(job.get("Entreprise", job.get("entreprise", "")))
+    if reliable_company(current):
+        return current
+    url = clean(job.get("Lien", job.get("lien", "")))
+    if url:
+        html, _ = get(url)
+        return extract_company(html)
+    return ""
 
 def official_site(company):
-    if not reliable_company(company): return ""
-    queries=[
+    if not reliable_company(company):
+        return ""
+    queries = [
         f'"{company}" official website',
         f'"{company}" contact',
         f'"{company}" careers',
-        f'"{company}" recruitment email'
+        f'"{company}" email',
+        f'"{company}" contact details'
     ]
     for q in queries:
-        for title,u in search(q,12):
-            h=host(u)
-            if blocked(u): continue
-            if any(x in h for x in ("careerjet","jobboard","jooble","talent.com","simplyhired","glassdoor","indeed")): continue
-            # Reject obvious article/search pages and keep the canonical origin.
-            p=urlparse(u)
-            if p.scheme in ("http","https") and h:
-                return p.scheme+"://"+h+"/"
+        for _, u in search(q, 12):
+            h = host(u)
+            if blocked(u) or any(x in h for x in (
+                "careerjet", "jobboard", "jooble", "talent.com", "simplyhired",
+                "glassdoor", "indeed", "linkedin", "facebook"
+            )):
+                continue
+            p = urlparse(u)
+            if p.scheme in ("http", "https") and h:
+                return p.scheme + "://" + h + "/"
     return ""
 
 def discover_site_emails(site, company):
-    """Find any public company email; never restrict discovery to HR/careers."""
+    """Collect public emails from search-indexed pages and a broad same-site crawl."""
     if not site:
         return set()
-    base=site.rstrip("/")
-    found=set()
-    seen=set()
-    queue=[urljoin(base+"/", path.lstrip("/")) for path in PATHS]
+    site_host = host(site)
+    base = site.rstrip("/") + "/"
+    found, seen, queued = set(), set(), set()
+    queue = [urljoin(base, p.lstrip("/")) for p in PATHS]
 
-    # Search engines can expose public emails from pages that are not linked from
-    # the homepage. Search by company, not by department.
+    # Search all public contact channels, not just recruitment addresses.
     queries = [
-        f'"{company}" email',
-        f'"{company}" contact email',
-        f'"{company}" "@"',
-        f'"{company}" mailto',
-        f'site:{host(site)} email',
-        f'site:{host(site)} "@"',
-        f'site:{host(site)} "@{host(site)}"',
+        f'"{company}" email', f'"{company}" contact email',
+        f'"{company}" "@"', f'"{company}" mailto',
+        f'"{company}" phone email', f'"{company}" sales contact',
+        f'site:{site_host} email', f'site:{site_host} contact',
+        f'site:{site_host} "@{site_host}"',
+        f'site:{site_host} mailto'
     ]
     for q in queries:
-        for _,u in search(q,15):
-            if blocked(u): continue
-            html,_=get(u)
-            if not html: continue
-            found |= emails_from(html)
+        for _, u in search(q, 12):
+            # Search results can include third-party pages about the company;
+            # inspect them for publicly published emails, but never treat them as the official site.
+            html, _ = get(u)
+            if html:
+                found |= emails_from(html)
 
-    # Broadly crawl the public company website. Contact/HR/careers are only
-    # priority links; they are NOT the only pages we inspect.
-    max_pages=50
-    while queue and len(seen)<max_pages:
-        url=queue.pop(0)
-        if url in seen or host(url)!=host(site): continue
+    while queue and len(seen) < MAX_SITE_PAGES:
+        url = queue.pop(0).split("#", 1)[0]
+        if url in seen or url in queued or host(url) != site_host:
+            continue
+        queued.add(url)
         seen.add(url)
-        html,final=get(url)
-        if not html: continue
+        html, final = get(url)
+        if not html:
+            continue
         found |= emails_from(html)
-        soup=BeautifulSoup(html,"html.parser")
-        links=[]
+        soup = BeautifulSoup(html, "html.parser")
+        links = []
         for a in soup.select("a[href]"):
-            href=a.get("href","")
-            if not href or href.startswith(("mailto:","tel:","javascript:")): continue
-            target=urljoin(final,href).split("#",1)[0]
-            if host(target)!=host(site) or target in seen: continue
-            label=clean(a.get_text(" ",strip=True)).lower()
-            priority=0 if any(k in (label+" "+target.lower()) for k in
-                              ("contact","about","team","company","office","email","career",
-                               "job","recruit","sales","support","press","media","legal",
-                               "partner","business")) else 1
-            links.append((priority,target))
-        links.sort()
-        for _,target in links[:20]:
-            if target not in seen and len(queue)<100:
+            href = a.get("href", "")
+            if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+                continue
+            target = urljoin(final, href).split("#", 1)[0]
+            if host(target) != site_host or target in seen or target in queued:
+                continue
+            label = clean(a.get_text(" ", strip=True)).lower()
+            path = urlparse(target).path.lower()
+            priority = 0 if any(k in label + " " + path for k in (
+                "contact", "about", "team", "company", "office", "email", "career",
+                "job", "recruit", "sales", "support", "press", "media", "legal",
+                "partner", "business", "imprint", "impressum", "privacy", "location"
+            )) else 1
+            links.append((priority, target))
+        links.sort(key=lambda x: (x[0], len(x[1])))
+        for _, target in links:
+            if len(queue) + len(seen) >= MAX_SITE_PAGES * 2:
+                break
+            if target not in queued and target not in seen:
                 queue.append(target)
+                queued.add(target)
     return found
 
 def enrich(job):
-    company=recover_company(job)
-    site=clean(job.get("Company Site","")) or official_site(company)
-    found=discover_site_emails(site,company)
-    # If the official site search failed, do one final company-name email search
-    # without fabricating a domain.
-    if not found and reliable_company(company):
-        for q in (
-            f'"{company}" email',
-            f'"{company}" contact email',
-            f'"{company}" "@"',
-            f'"{company}" mailto'
-        ):
-            for _,u in search(q,10):
-                h,_=get(u)
-                found |= emails_from(h)
-    good=sorted(found)
+    company = recover_company(job)
+    site = clean(job.get("Company Site", job.get("company_site", "")))
+    if not site:
+        site = official_site(company)
+    found = discover_site_emails(site, company)
+    # Broad fallback search also works when no official website can be identified.
+    if reliable_company(company):
+        for q in (f'"{company}" email', f'"{company}" contact email',
+                  f'"{company}" "@"', f'"{company}" mailto'):
+            for _, u in search(q, 10):
+                html, _ = get(u)
+                if html:
+                    found |= emails_from(html)
+    good = sorted(found)
     return {
-        "id":clean(job.get("ID","")),
-        "sheet":clean(job.get("_sheet","")),
-        "entreprise":company,
-        "company_site":site,
-        "emails_rh":" / ".join(good),
-        "deep_status":"DONE" if (site or company) else "NO_COMPANY",
-        "email_status":"FOUND" if good else "NO_EMAIL",
-        "email_source":"Public company website / public web" if good else ""
+        "id": clean(job.get("ID", job.get("id", ""))),
+        "sheet": clean(job.get("_sheet", job.get("sheet", ""))),
+        "entreprise": company,
+        "company_site": site,
+        "emails_rh": " / ".join(good),
+        "deep_status": "DONE" if (site or company) else "NO_COMPANY",
+        "email_status": "FOUND" if good else ("NO_EMAIL" if company else "NO_COMPANY"),
+        "email_source": "Public company website / public web" if good else ""
     }
 
 def webhook(payload):
-    if not WEBHOOK: raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
-    r=S.post(WEBHOOK,json=payload,timeout=90,headers={"Content-Type":"application/json"})
+    if not WEBHOOK:
+        raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
+    r = session().post(WEBHOOK, json=payload, timeout=90,
+                       headers={"Content-Type": "application/json"})
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if data.get("status") != "success":
+        raise RuntimeError(f"Unexpected Google Sheets webhook response: {data!r}")
+    return data
 
 def main():
-    jobs=[]
-    for sheet in ("Worldwide Remote","Morocco Remote","Casablanca Onsite","Casablanca Spontaneous"):
-        data=webhook({"mode":"pending","limit":5000,"sheet":sheet})
-        for job in data.get("jobs",[]):
-            job["_sheet"]=sheet
-            jobs.append(job)
-    print(f"[EMAIL ENRICH] pending={len(jobs)} remote jobs",flush=True)
-    updates=[]
-    for idx,job in enumerate(jobs,1):
-        try:
-            u=enrich(job)
-            if u["id"]:
-                updates.append(u)
-                if u["emails_rh"]:
-                    print(f"[EMAIL FOUND] {u['entreprise']} -> {u['emails_rh']}",flush=True)
-        except Exception as e:
-            print(f"[EMAIL ERROR] {idx}: {e}",flush=True)
-        if len(updates)>=25:
-            webhook({"mode":"enrich","updates":updates}); updates=[]
-    if updates: webhook({"mode":"enrich","updates":updates})
-    print("[EMAIL ENRICH] complete",flush=True)
+    all_jobs, seen = [], set()
+    for sheet in ("Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous"):
+        data = webhook({"mode": "pending", "limit": 5000, "sheet": sheet})
+        for job in data.get("jobs", []):
+            key = (sheet, clean(job.get("ID", job.get("id", ""))))
+            if key in seen:
+                continue
+            seen.add(key)
+            job["_sheet"] = sheet
+            all_jobs.append(job)
+    print(f"[EMAIL ENRICH] pending={len(all_jobs)} workers={WORKERS} pages_per_site<={MAX_SITE_PAGES}", flush=True)
+    updates, found_count, error_count = [], 0, 0
 
-if __name__=="__main__":
+    def process(index, job):
+        try:
+            return index, enrich(job), ""
+        except Exception as e:
+            return index, None, str(e)[:250]
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = [pool.submit(process, i, job) for i, job in enumerate(all_jobs, 1)]
+        for future in as_completed(futures):
+            idx, update, error = future.result()
+            if error:
+                error_count += 1
+                print(f"[EMAIL ERROR] row={idx}: {error}", flush=True)
+                continue
+            if not update["id"]:
+                continue
+            updates.append(update)
+            if update["emails_rh"]:
+                found_count += 1
+                print(f"[EMAIL FOUND] {update['entreprise']} -> {update['emails_rh']}", flush=True)
+            if len(updates) >= 25:
+                try:
+                    webhook({"mode": "enrich", "updates": updates})
+                    print(f"[SHEETS] persisted batch={len(updates)}", flush=True)
+                except Exception as e:
+                    print(f"[SHEETS WRITE ERROR] {e}; retrying once", flush=True)
+                    time.sleep(2)
+                    webhook({"mode": "enrich", "updates": updates})
+                updates = []
+    if updates:
+        webhook({"mode": "enrich", "updates": updates})
+    print(f"[EMAIL ENRICH DONE] processed={len(all_jobs)} companies_with_emails={found_count} errors={error_count}", flush=True)
+
+if __name__ == "__main__":
     main()
