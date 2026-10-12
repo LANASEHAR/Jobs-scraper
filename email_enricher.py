@@ -338,8 +338,8 @@ def main():
                 failed = {
                     "id": clean(job.get("ID", job.get("id", ""))),
                     "sheet": clean(job.get("_sheet", job.get("sheet", ""))),
-                    "deep_status": "ERROR",
-                    "email_status": "ERROR",
+                    "deep_status": "PENDING",
+                    "email_status": "PENDING",
                     "email_source": clean(error)[:180]
                 }
                 if failed["id"]:
