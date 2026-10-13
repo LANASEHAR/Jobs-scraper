@@ -126,20 +126,21 @@ def valid_email(email):
     return local not in BAD_LOCAL_PARTS and domain not in BAD_EMAIL_DOMAINS
 
 def extract_emails(html):
+    """Extract public addresses from visible text and mailto links, avoiding asset URLs."""
     if not html:
         return set()
-    text = re.sub(r"\s*(?:\[|\(|\{)\s*(?:at|ät)\s*(?:\]|\)|\})\s*", "@", html, flags=re.I)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s*(?:\[|\(|\{)\s*(?:at|ät)\s*(?:\]|\)|\})\s*", "@", text, flags=re.I)
     text = re.sub(r"\s*(?:\[|\(|\{)\s*(?:dot|punkt)\s*(?:\]|\)|\})\s*", ".", text, flags=re.I)
     found = {e.lower() for e in EMAIL_RE.findall(text) if valid_email(e)}
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        for a in soup.select('a[href^="mailto:"]'):
-            e = a.get("href", "")[7:].split("?", 1)[0]
-            if valid_email(e):
-                found.add(e.lower())
-    except Exception:
-        pass
-    return found
+    for anchor in soup.select('a[href^="mailto:"]'):
+        email = anchor.get("href", "")[7:].split("?", 1)[0]
+        if valid_email(email):
+            found.add(email.lower())
+    return {e for e in found
+            if e.split("@", 1)[0] not in {"name", "you", "user", "test", "email", "yourname"}
+            and not re.search(r"\.(?:png|jpe?g|gif|webp|svg|css|js|woff2?)$", e.split("@", 1)[0], re.I)}
 
 def fetch(url):
     if not url or not budget_ok():
