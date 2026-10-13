@@ -20,6 +20,8 @@ S = requests.Session()
 FETCH_CACHE = {}
 FETCH_CACHE_LOCK = threading.Lock()
 BLOCKED_HOSTS_RUN = set()
+# Hosts that repeatedly time out or redirect badly are skipped for the rest of this run.
+UNRELIABLE_HOSTS_RUN = set()
 HOST_LOCKS = {}
 
 SEARCHES = [
@@ -194,7 +196,7 @@ def fetch(url, timeout=10, retries=1):
         with FETCH_CACHE_LOCK:
             if key in FETCH_CACHE:
                 return FETCH_CACHE[key]
-            if h in BLOCKED_HOSTS_RUN:
+            if h in BLOCKED_HOSTS_RUN or h in UNRELIABLE_HOSTS_RUN:
                 return None
 
         result = None
@@ -213,19 +215,35 @@ def fetch(url, timeout=10, retries=1):
                         FETCH_CACHE[key] = None
                     print(f"[HTTP SKIP HOST] {r.status_code} {h}; using other sources", flush=True)
                     return None
-                if r.status_code in (404, 410):
-                    # Guessed URLs and stale job links commonly return 404/410; skip quietly.
+                if r.status_code in (400, 404, 410):
+                    # Bad guessed paths and expired pages are normal during enrichment.
                     break
                 if r.status_code == 503:
-                    print(f"[HTTP TEMPORARY] 503 {h}; retrying if budget allows", flush=True)
                     if attempt < retries:
                         time.sleep(min(3, 1.2 ** attempt))
                         continue
+                    print(f"[HTTP TEMPORARY] 503 {h}; skipping host for now", flush=True)
+                    with FETCH_CACHE_LOCK:
+                        UNRELIABLE_HOSTS_RUN.add(h)
                     break
-                print(f"[HTTP] {r.status_code} {key}", flush=True)
+                print(f"[HTTP] {r.status_code} {h} (path skipped)", flush=True)
+            except requests.TooManyRedirects:
+                stat("HTTP", "too_many_redirects")
+                with FETCH_CACHE_LOCK:
+                    UNRELIABLE_HOSTS_RUN.add(h)
+                print(f"[HTTP SKIP HOST] redirect loop {h}; trying other sources", flush=True)
+                break
+            except (requests.Timeout, requests.ConnectionError) as e:
+                stat("HTTP", type(e).__name__)
+                # Repeated guessed pages on the same slow host waste the run budget.
+                with FETCH_CACHE_LOCK:
+                    UNRELIABLE_HOSTS_RUN.add(h)
+                print(f"[HTTP SKIP HOST] {type(e).__name__} {h}; skipping remaining paths", flush=True)
+                break
             except requests.RequestException as e:
                 stat("HTTP", "exception")
-                print(f"[HTTP ERROR] {type(e).__name__} {key}", flush=True)
+                print(f"[HTTP ERROR] {type(e).__name__} {h}", flush=True)
+                break
             if attempt < retries:
                 time.sleep(min(3, 1.2 ** attempt))
 
@@ -838,11 +856,24 @@ def extract_emails(html):
 
 def official_site(company):
     if not company or clean(company).lower() in {"unknown","indeed employer","linkedin employer"}: return ""
+    # Do not mistake identity-provider/login tenants or news/search/job aggregators for the employer's site.
+    excluded_site_hosts = (
+        "onelogin.com", "okta.com", "auth0.com", "login.microsoftonline.com",
+        "accounts.google.com", "news.international.com", "careerjet", "jobboard",
+        "jooble", "talent.com", "simplyhired", "glassdoor.com", "indeed.com",
+        "linkedin.com", "rekrute.com", "emploi.ma", "novojob.com",
+    )
+    company_tokens = [t for t in re.findall(r"[a-z0-9]+", clean(company).lower()) if len(t) >= 3]
     for q in (f'"{company}" official website',f'"{company}" contact careers',f'"{company}" recruitment email'):
-        for _,u in web_search(q,12):
+        for title,u in web_search(q,12):
             h=host(u)
             if not h or any(h==x or h.endswith("."+x) for x in BLOCKED_DOMAINS): continue
-            if any(x in h for x in ("careerjet","jobboard","jooble","talent.com","simplyhired")): continue
+            if any(x in h for x in excluded_site_hosts): continue
+            # Require a weak company-name match unless the result title clearly names the company.
+            host_label = h.replace("-", " ").replace(".", " ")
+            result_text = (host_label + " " + clean(title).lower())
+            if company_tokens and not any(t in result_text for t in company_tokens):
+                continue
             return "https://"+h+"/"
     return ""
 
