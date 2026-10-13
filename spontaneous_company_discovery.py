@@ -1,6 +1,6 @@
 """Find companies for spontaneous applications even when no vacancy is published."""
 import hashlib, os, re, time
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse, parse_qs
 import requests
 from bs4 import BeautifulSoup
 
@@ -55,21 +55,58 @@ def get(url):
  return "", url
 
 def search(query, limit=8):
+ """Search public indexes with multiple selector fallbacks and unwrap DDG redirects."""
  out, seen = [], set()
- for endpoint in ("https://html.duckduckgo.com/html/?q="+quote_plus(query),
-                  "https://www.bing.com/search?q="+quote_plus(query)):
+ endpoints = (
+  ("DuckDuckGo", "https://html.duckduckgo.com/html/?q=" + quote_plus(query)),
+  ("Bing", "https://www.bing.com/search?q=" + quote_plus(query)),
+ )
+ for engine, endpoint in endpoints:
   try:
-   r = requests.get(endpoint, headers=HEADERS, timeout=10)
-   if r.status_code != 200: continue
+   r = requests.get(endpoint, headers=HEADERS, timeout=12, allow_redirects=True)
+   if r.status_code != 200 or not r.text:
+    print(f"[SEARCH WARNING] {engine} HTTP {r.status_code}", flush=True)
+    continue
    soup = BeautifulSoup(r.text, "html.parser")
-   for selector in ("a.result__a[href]", "a.result-link[href]", "li.b_algo h2 a[href]"):
+   selectors = ("a.result__a[href]", "a.result-link[href]", "li.b_algo h2 a[href]",
+                "h2 a[href]", "a[href]")
+   candidates, local_seen = [], set()
+   for selector in selectors:
     for a in soup.select(selector):
-     u = a.get("href", "").split("#",1)[0]
-     if not u.startswith(("http://","https://")) or blocked(u) or u in seen: continue
-     seen.add(u); out.append((a.get_text(" ",strip=True),u))
-     if len(out) >= limit: return out
+     raw = a.get("href", "").strip()
+     if not raw:
+      continue
+     if raw.startswith("//"):
+      raw = "https:" + raw
+     if raw.startswith("/"):
+      params = parse_qs(urlparse(raw).query)
+      target = (params.get("uddg") or params.get("url") or [""])[0]
+      if target.startswith(("http://", "https://")):
+       raw = target
+      else:
+       continue
+     if not raw.startswith(("http://", "https://")):
+      continue
+     target = raw.split("#", 1)[0]
+     if blocked(target) or target in local_seen:
+      continue
+     label = a.get_text(" ", strip=True)
+     if not label and selector == "a[href]":
+      continue
+     local_seen.add(target)
+     candidates.append((label, target))
+    if candidates:
+     break
+   for label, target in candidates:
+    if target in seen:
+     continue
+    seen.add(target)
+    out.append((label, target))
+    if len(out) >= limit:
+     return out
+   print(f"[SEARCH] {engine}: {len(candidates)} usable results", flush=True)
   except requests.RequestException as exc:
-   print(f"[SEARCH WARNING] {type(exc).__name__}: {query}", flush=True)
+   print(f"[SEARCH WARNING] {engine} {type(exc).__name__}: {query}", flush=True)
   time.sleep(0.4)
  return out
 
