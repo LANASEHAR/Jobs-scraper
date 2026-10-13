@@ -147,34 +147,77 @@ def fetch(url):
         return ""
     try:
         response = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True)
-        return response.text if response.status_code == 200 else ""
-    except requests.RequestException:
+        if response.status_code == 200:
+            return response.text
+        if response.status_code in (401, 403, 429):
+            print(f"[HTTP BLOCKED] {response.status_code} {host(url)}; skipping and continuing with other sources", flush=True)
+        elif response.status_code not in (404, 410):
+            print(f"[HTTP SKIP] {response.status_code} {url}", flush=True)
+        # 404/410 usually means a guessed contact path does not exist; this is not a run failure.
+        return ""
+    except requests.RequestException as exc:
+        print(f"[HTTP ERROR] {type(exc).__name__} {url}", flush=True)
         return ""
 
 def search(query, limit=12):
+    """Try several public search formats; do not treat bot challenges as results."""
     results, seen = [], set()
-    for engine in ("https://www.bing.com/search?q=", "https://html.duckduckgo.com/html/?q="):
+    engines = [
+        ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(query), "rss"),
+        ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(query), "html"),
+        ("Bing HTML", "https://www.bing.com/search?q=" + quote_plus(query), "html"),
+        ("Yahoo", "https://search.yahoo.com/search?p=" + quote_plus(query), "html"),
+    ]
+    for name, endpoint, mode in engines:
         if len(results) >= limit or not budget_ok():
             break
         try:
-            response = SESSION.get(engine + quote_plus(query), timeout=8)
-            if response.status_code != 200:
+            response = SESSION.get(endpoint, timeout=10, allow_redirects=True)
+            if response.status_code != 200 or not response.text:
+                print(f"[SEARCH WARNING] {name} HTTP {response.status_code}; trying next index", flush=True)
                 continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            selectors = ["li.b_algo h2 a[href]"] if "bing" in engine else ["a.result__a[href]", "a.result-link[href]"]
-            for selector in selectors:
-                for anchor in soup.select(selector):
-                    url = anchor.get("href", "")
-                    if not url.startswith("http") or url in seen:
-                        continue
-                    seen.add(url)
-                    results.append((clean(anchor.get_text(" ", strip=True)), url))
-                    if len(results) >= limit:
+            soup = BeautifulSoup(response.text, "xml" if mode == "rss" else "html.parser")
+            if mode == "rss":
+                candidates = []
+                for item in soup.find_all("item"):
+                    title_node, link_node = item.find("title"), item.find("link")
+                    title = clean(title_node.get_text(" ", strip=True) if title_node else "")
+                    link = clean(link_node.get_text(strip=True) if link_node else "")
+                    if title and link:
+                        candidates.append((title, link))
+            else:
+                candidates = []
+                selectors = ("a.result-link[href]", "a.result__a[href]", "li.b_algo h2 a[href]",
+                             "h2 a[href]", "div.algo-sr h3 a[href]", "a[href]")
+                for selector in selectors:
+                    for anchor in soup.select(selector):
+                        title = clean(anchor.get_text(" ", strip=True))
+                        link = anchor.get("href", "").strip()
+                        if title and link:
+                            candidates.append((title, link))
+                    if candidates:
                         break
+            count = 0
+            for title, url in candidates:
+                url = clean(url).split("#", 1)[0]
+                if url.startswith("//"):
+                    url = "https:" + url
+                if not url.startswith(("http://", "https://")):
+                    continue
+                h = host(url)
+                if not h or any(x in h for x in ("bing.com", "duckduckgo.com", "search.yahoo.com")):
+                    continue
+                if not is_good_official_site(url) or url in seen:
+                    continue
+                seen.add(url)
+                results.append((title or h, url))
+                count += 1
                 if len(results) >= limit:
                     break
-        except requests.RequestException:
-            continue
+            print(f"[SEARCH] {name}: {count} usable results", flush=True)
+        except (requests.RequestException, ValueError) as exc:
+            print(f"[SEARCH WARNING] {name} {type(exc).__name__}; trying next index", flush=True)
+        time.sleep(0.25)
     return results
 
 def is_good_official_site(url):
