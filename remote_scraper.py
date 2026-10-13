@@ -241,19 +241,21 @@ def web_search(q, limit=20):
     if cached is not None:
         return list(cached)
 
+    # Bing first: DDG was repeatedly timing out in GitHub Actions.
+    # Keep DDG as a short-timeout fallback instead of paying 7s per query.
     providers = [
-        ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q)),
-        ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q)),
-        ("Bing", "https://www.bing.com/search?q=" + quote_plus(q)),
-        ("DDG", "https://html.duckduckgo.com/html/?q=" + quote_plus(q)),
-        ("Google", "https://www.google.com/search?q=" + quote_plus(q)),
+        ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q), 5),
+        ("Bing", "https://www.bing.com/search?q=" + quote_plus(q), 5),
+        ("Google", "https://www.google.com/search?q=" + quote_plus(q), 4),
+        ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q), 2),
+        ("DDG", "https://html.duckduckgo.com/html/?q=" + quote_plus(q), 2),
     ]
     merged, seen = [], set()
-    for name, url in providers:
+    for name, url, timeout in providers:
         if len(merged) >= limit or not budget_ok():
             break
         try:
-            r = S.get(url, headers=hdr(), timeout=7, allow_redirects=True)
+            r = S.get(url, headers=hdr(), timeout=(2, timeout), allow_redirects=True)
             if r.status_code != 200 or not r.text:
                 stat("Search", f"{name.replace(' ', '_')}_{r.status_code}")
                 continue
@@ -287,6 +289,12 @@ def web_search(q, limit=20):
                 u = clean(u).split("#", 1)[0]
                 if u.startswith("//"):
                     u = "https:" + u
+                if u.startswith(("http://", "https://")):
+                    parsed = urlparse(u)
+                    if parsed.path in ("/url", "/redirect") or "uddg=" in parsed.query:
+                        from urllib.parse import parse_qs
+                        params = parse_qs(parsed.query)
+                        u = next((params[k][0] for k in ("q", "url", "uddg", "u") if params.get(k)), u)
                 if not u.startswith(("http://", "https://")) or not title or u in seen:
                     continue
                 if any(x in host(u) for x in ("google.com", "bing.com", "duckduckgo.com")):
@@ -297,7 +305,7 @@ def web_search(q, limit=20):
                     break
         except requests.RequestException as e:
             stat("Search", f"{name.replace(' ', '_')}_exception")
-            print(f"[SEARCH WARNING] {name} {type(e).__name__}", flush=True)
+            print(f"[SEARCH WARNING] {name} {type(e).__name__}; short timeout fallback", flush=True)
 
     result = merged[:limit]
     with SEARCH_CACHE_LOCK:
@@ -446,12 +454,17 @@ def indeed():
             accepted=0
             for title,u in results:
                 h=host(u)
-                if "indeed.com" not in h or ("/viewjob" not in u and "/jobs/view" not in u): continue
+                if not (h == "indeed.com" or h.endswith(".indeed.com")): continue
+                path=urlparse(u).path.lower()
+                # Indexes often return Indeed tracking links instead of /viewjob.
+                if not any(token in path for token in ("/viewjob", "/jobs/", "/rc/clk", "/pagead/clk", "/m/viewjob")):
+                    continue
                 if not target(title): continue
                 parts=[clean(x) for x in re.split(r"\s[|–—-]\s*",title) if clean(x)]
                 jt=parts[0] if parts else clean(title)
-                company=parts[-1] if len(parts)>1 else "Indeed Employer"
-                j=make_job(jt,company,loc,remote,"Indeed",u.split("?")[0],"",title,kind)
+                # Don't invent an employer when the indexed title does not name one.
+                company=parts[-1] if len(parts)>1 else ""
+                j=make_job(jt,company,loc,remote,"Indeed",u.split("#")[0],"",title,kind)
                 if j["id"] in seen: continue
                 found.append(j);accepted+=1
             debug_event("Indeed","query",family=family,kind=kind,
