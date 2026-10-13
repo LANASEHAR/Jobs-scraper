@@ -241,14 +241,13 @@ def web_search(q, limit=20):
     if cached is not None:
         return list(cached)
 
-    # Bing first: DDG was repeatedly timing out in GitHub Actions.
-    # Keep DDG as a short-timeout fallback instead of paying 7s per query.
+    # GitHub Actions repeatedly times out on DuckDuckGo, so don't call DDG
+    # for every query. Use Bing RSS, Bing HTML and Google only; each has a
+    # bounded timeout and failure in one provider does not stop the others.
     providers = [
         ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(q), 5),
         ("Bing", "https://www.bing.com/search?q=" + quote_plus(q), 5),
         ("Google", "https://www.google.com/search?q=" + quote_plus(q), 4),
-        ("DDG Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(q), 2),
-        ("DDG", "https://html.duckduckgo.com/html/?q=" + quote_plus(q), 2),
     ]
     merged, seen = [], set()
     for name, url, timeout in providers:
