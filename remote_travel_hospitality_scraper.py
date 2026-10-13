@@ -25,6 +25,7 @@ SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9,fr;q=0.8,de;q=0.7",
 })
+BLOCKED_HOSTS_RUNTIME = set()
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}")
 BAD_EMAIL_DOMAINS = {
@@ -145,12 +146,16 @@ def extract_emails(html):
 def fetch(url):
     if not url or not budget_ok():
         return ""
+    h = host(url)
+    if h in BLOCKED_HOSTS_RUNTIME:
+        return ""
     try:
         response = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True)
         if response.status_code == 200:
             return response.text
         if response.status_code in (401, 403, 429):
-            print(f"[HTTP BLOCKED] {response.status_code} {host(url)}; skipping and continuing with other sources", flush=True)
+            BLOCKED_HOSTS_RUNTIME.add(h)
+            print(f"[HTTP BLOCKED] {response.status_code} {h}; skipping host and continuing with other sources", flush=True)
         elif response.status_code not in (404, 410):
             print(f"[HTTP SKIP] {response.status_code} {url}", flush=True)
         # 404/410 usually means a guessed contact path does not exist; this is not a run failure.
