@@ -1,4 +1,4 @@
-name: Spontaneous Company + Public Email Discovery
+name: Company-First Discovery + Public Email Enrichment
 
 on:
   workflow_dispatch:
@@ -8,12 +8,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'spontaneous_company_discovery.py'
+      - 'company_prospect_discovery.py'
       - '.github/workflows/spontaneous_contacts.yml'
+      - 'email_enricher.py'
       - 'requirements.txt'
 
 concurrency:
-  group: spontaneous-company-discovery
+  group: company-first-discovery
   cancel-in-progress: false
 
 permissions:
@@ -21,13 +22,16 @@ permissions:
 
 jobs:
   discover:
-    name: Find companies without job vacancies
+    name: Discover companies independently of vacancies
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 110
     env:
       GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
       PYTHONUNBUFFERED: '1'
-      SPONTANEOUS_MAX_COMPANIES: '100'
+      COMPANY_DISCOVERY_MAX: '100'
+      EMAIL_WORKERS: '8'
+      EMAIL_MAX_SITE_PAGES: '14'
+      EMAIL_MAX_COMPANIES_PER_RUN: '60'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -37,13 +41,24 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Validate Python syntax
-        run: python -m py_compile spontaneous_company_discovery.py
-      - name: Discover companies and public contact emails
+      - name: Validate both company discovery and enrichment
+        run: python -m py_compile company_prospect_discovery.py email_enricher.py
+      - name: Discover companies, crawl official sites, and store pending contacts
+        timeout-minutes: 65
         run: |
           for attempt in 1 2 3; do
-            echo "Spontaneous discovery attempt $attempt/3"
-            python spontaneous_company_discovery.py && exit 0
+            echo "Company-first discovery attempt $attempt/3"
+            python -u company_prospect_discovery.py && break
+            [ "$attempt" -eq 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
+      - name: Enrich pending company rows with any public contact emails
+        if: always()
+        timeout-minutes: 40
+        run: |
+          for attempt in 1 2 3; do
+            echo "Pending email enrichment attempt $attempt/3"
+            python -u email_enricher.py && exit 0
             [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
           done
           exit 1
