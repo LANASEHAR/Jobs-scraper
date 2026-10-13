@@ -231,7 +231,7 @@ def make_record(name, site, emails):
     sheet = "Casablanca Spontaneous" if is_morocco else "Worldwide Remote"
     title = "Spontaneous application — Customer Success / Account Management / Sales Administration"
     return {
-        "id": "company_" + hashlib.sha256(host(site).encode()).hexdigest()[:20],
+        "id": "spont_" + hashlib.sha256(host(site).encode()).hexdigest()[:18],
         "date_detection": time.strftime("%Y-%m-%d"),
         "statut": "NEW", "role_cible": title, "intitule": title, "entreprise": name,
         "lieu": "Casablanca, Morocco" if is_morocco else "International — company prospect",
