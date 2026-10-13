@@ -73,7 +73,7 @@ No invented emails. No CAPTCHA, authentication or anti-bot bypass.
 
 ## Schedule
 
-.github/workflows/remote_jobs.yml runs the pipeline every 4 hours 30 minutes at 00:00, 04:30, 09:00, 13:30, 18:00 and 22:30 UTC, with manual dispatch available.
+.github/workflows/remote_jobs.yml runs the job-offer discovery pipeline twice daily (05:13 and 17:37 UTC) and can also be started manually.\n\n`.github/workflows/spontaneous_contacts.yml` is a separate company-first workflow, independent of published vacancies. It runs at 06:41 and 18:11 UTC and can also be started manually. It searches for companies, crawls official sites and public contact pages, stores companies even when no email is found, then runs the pending email-enrichment pass.
 
 The scraper searches a 72-hour freshness window so an offer is not lost if one run misses it. The Sheet keeps the Posted <=24h field so the freshest opportunities remain filterable.
 
@@ -96,7 +96,7 @@ Code.gs:
 3. Verify SPREADSHEET_ID.
 4. Run setupRemoteSheet() once.
 5. Run setupAutomation() once and authorize Gmail/Drive/Sheets.
-6. The scraper also performs a final Casablanca spontaneous-company search after advertised jobs are exhausted.
+6. The job-offer workflow and company-first workflow are separate. Company-first discovery stores no-email companies with `Email Status = PENDING` and `Deep Status = PENDING`; subsequent enrichment retries them. Existing company IDs are preserved to avoid duplicate rows.
 7. Deploy the script as a Web App (Execute as me, access suitable for your GitHub webhook).
 8. Keep the deployed /exec URL in GitHub secret GOOGLE_SHEET_WEBHOOK_URL.
 
@@ -114,3 +114,4 @@ LinkedIn / Indeed / remote boards / Morocco / Casablanca
 → Google Sheet
 → personalized English Gmail + CV
 → optional follow-up
+\n\n## Company-first discovery metrics\n\nThe separate company-first workflow logs distinct counters: `companies_discovered`, `official_sites_accessible`, `pages_accessible`, `companies_with_public_emails`, `public_email_addresses`, `companies_pending_enrichment`, and `sheet_rows_actually_added`. A successful Actions run alone is not treated as proof that rows were added; check the `sheet_rows_actually_added` counter.\n
