@@ -125,8 +125,9 @@ def get(url):
                     PAGE_BLOCKED_HOSTS.add(h)
                     PAGE_BLOCKED_HOSTS.add(final_host)
                 print(f"[HTTP SKIP HOST] {r.status_code} {h}; using other sources", flush=True)
-            elif r.status_code in (404, 410, 503):
-                print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
+            elif r.status_code == 503:
+                print(f"[HTTP TEMPORARY] 503 {h}; this host may be overloaded, continuing with other sources", flush=True)
+            # 404/410 on guessed contact paths are expected and should not flood Actions logs.
         except requests.RequestException as exc:
             print(f"[HTTP ERROR] {type(exc).__name__} {key}", flush=True)
         with PAGE_CACHE_LOCK:
