@@ -50,64 +50,89 @@ def get(url):
   r = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
   if r.status_code == 200 and "text/html" in r.headers.get("content-type", "text/html"):
    return r.text, r.url
- except requests.RequestException:
-  pass
+  if r.status_code in (401, 403, 429):
+   print(f"[HTTP BLOCKED] {r.status_code} {host(url)}; skipping host and relying on other public sources", flush=True)
+  elif r.status_code not in (404, 410):
+   print(f"[HTTP SKIP] {r.status_code} {url}", flush=True)
+ except requests.RequestException as exc:
+  print(f"[HTTP ERROR] {type(exc).__name__} {url}", flush=True)
  return "", url
 
 def search(query, limit=8):
- """Search public indexes with multiple selector fallbacks and unwrap DDG redirects."""
+ """Search several public indexes; treat bot challenges as unavailable, not results."""
  out, seen = [], set()
  endpoints = (
-  ("DuckDuckGo", "https://html.duckduckgo.com/html/?q=" + quote_plus(query)),
-  ("Bing", "https://www.bing.com/search?q=" + quote_plus(query)),
+  ("Bing RSS", "https://www.bing.com/search?format=rss&q=" + quote_plus(query), "rss"),
+  ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/?q=" + quote_plus(query), "html"),
+  ("Bing HTML", "https://www.bing.com/search?q=" + quote_plus(query), "html"),
+  ("Yahoo", "https://search.yahoo.com/search?p=" + quote_plus(query), "html"),
  )
- for engine, endpoint in endpoints:
+ for engine, endpoint, mode in endpoints:
   try:
    r = requests.get(endpoint, headers=HEADERS, timeout=12, allow_redirects=True)
    if r.status_code != 200 or not r.text:
-    print(f"[SEARCH WARNING] {engine} HTTP {r.status_code}", flush=True)
+    print(f"[SEARCH WARNING] {engine} HTTP {r.status_code}; trying next index", flush=True)
     continue
-   soup = BeautifulSoup(r.text, "html.parser")
-   selectors = ("a.result__a[href]", "a.result-link[href]", "li.b_algo h2 a[href]",
-                "h2 a[href]", "a[href]")
-   candidates, local_seen = [], set()
-   for selector in selectors:
-    for a in soup.select(selector):
-     raw = a.get("href", "").strip()
-     if not raw:
-      continue
-     if raw.startswith("//"):
-      raw = "https:" + raw
-     if raw.startswith("/"):
-      params = parse_qs(urlparse(raw).query)
-      target = (params.get("uddg") or params.get("url") or [""])[0]
-      if target.startswith(("http://", "https://")):
-       raw = target
-      else:
+   if mode == "rss":
+    soup = BeautifulSoup(r.text, "xml")
+    links = []
+    for item in soup.find_all("item"):
+     title_node, link_node = item.find("title"), item.find("link")
+     title = title_node.get_text(" ", strip=True) if title_node else ""
+     url = link_node.get_text(strip=True) if link_node else ""
+     if title and url:
+      links.append((title, url))
+   else:
+    soup = BeautifulSoup(r.text, "html.parser")
+    selectors = ("a.result-link[href]", "a.result__a[href]", "li.b_algo h2 a[href]",
+                 "h2 a[href]", "div.algo-sr h3 a[href]", "a[href]")
+    links, local_seen = [], set()
+    for selector in selectors:
+     for a in soup.select(selector):
+      raw = a.get("href", "").strip()
+      if not raw:
        continue
-     if not raw.startswith(("http://", "https://")):
-      continue
-     target = raw.split("#", 1)[0]
-     if blocked(target) or target in local_seen:
-      continue
-     label = a.get_text(" ", strip=True)
-     if not label and selector == "a[href]":
-      continue
-     local_seen.add(target)
-     candidates.append((label, target))
-    if candidates:
-     break
-   for label, target in candidates:
-    if target in seen:
+      if raw.startswith("//"):
+       raw = "https:" + raw
+      if raw.startswith("/"):
+       params = parse_qs(urlparse(raw).query)
+       target = (params.get("uddg") or params.get("url") or params.get("u") or params.get("RU") or [""])[0]
+       if target.startswith(("http://", "https://")):
+        raw = target
+       else:
+        continue
+      if not raw.startswith(("http://", "https://")):
+       continue
+      label = a.get_text(" ", strip=True)
+      if not label:
+       continue
+      target = raw.split("#", 1)[0]
+      if target in local_seen:
+       continue
+      local_seen.add(target)
+      links.append((label, target))
+     if links:
+      break
+   usable = 0
+   for label, raw in links:
+    target = raw.strip().split("#", 1)[0]
+    if target.startswith("//"):
+     target = "https:" + target
+    if not target.startswith(("http://", "https://")):
+     continue
+    if host(target) in {"bing.com", "www.bing.com", "search.yahoo.com", "duckduckgo.com", "html.duckduckgo.com", "lite.duckduckgo.com"}:
+     continue
+    if blocked(target) or target in seen:
      continue
     seen.add(target)
     out.append((label, target))
+    usable += 1
     if len(out) >= limit:
      return out
-   print(f"[SEARCH] {engine}: {len(candidates)} usable results", flush=True)
-  except requests.RequestException as exc:
-   print(f"[SEARCH WARNING] {engine} {type(exc).__name__}: {query}", flush=True)
-  time.sleep(0.4)
+   print(f"[SEARCH] {engine}: {usable} usable results", flush=True)
+  except (requests.RequestException, ValueError) as exc:
+   print(f"[SEARCH WARNING] {engine} {type(exc).__name__}; trying next index", flush=True)
+  time.sleep(0.3)
  return out
 
 def emails_from(html):
