@@ -68,13 +68,28 @@ def valid_email(e):
     return True
 
 def emails_from(html):
-    text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", html or "", flags=re.I)
+    """Read addresses from visible text and explicit mailto links, not HTML attributes."""
+    if not html:
+        return set()
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", text, flags=re.I)
     text = re.sub(r"\s*(?:\[dot\]|\(dot\)|\{dot\})\s*", ".", text, flags=re.I)
-    soup = BeautifulSoup(text, "html.parser")
     found = set(EMAIL_RE.findall(text))
     for a in soup.select('a[href^="mailto:"]'):
         found.add(a.get("href", "")[7:].split("?", 1)[0])
-    return {e.lower().strip(" .;,<>\"'") for e in found if valid_email(e)}
+    result = set()
+    for raw in found:
+        email = raw.lower().strip(" .;,<>\"'")
+        if not valid_email(email):
+            continue
+        local = email.split("@", 1)[0]
+        if re.search(r"\.(?:png|jpe?g|gif|webp|svg|css|js|woff2?)$", local, re.I):
+            continue
+        if local in {"name", "you", "user", "test", "email", "yourname"}:
+            continue
+        result.add(email)
+    return result
 
 def host(url):
     try:
