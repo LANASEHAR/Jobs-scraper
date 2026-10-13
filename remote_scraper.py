@@ -213,8 +213,14 @@ def fetch(url, timeout=10, retries=1):
                         FETCH_CACHE[key] = None
                     print(f"[HTTP SKIP HOST] {r.status_code} {h}; using other sources", flush=True)
                     return None
-                if r.status_code in (404, 410, 503):
-                    print(f"[HTTP SKIP URL] {r.status_code} {key}", flush=True)
+                if r.status_code in (404, 410):
+                    # Guessed URLs and stale job links commonly return 404/410; skip quietly.
+                    break
+                if r.status_code == 503:
+                    print(f"[HTTP TEMPORARY] 503 {h}; retrying if budget allows", flush=True)
+                    if attempt < retries:
+                        time.sleep(min(3, 1.2 ** attempt))
+                        continue
                     break
                 print(f"[HTTP] {r.status_code} {key}", flush=True)
             except requests.RequestException as e:
