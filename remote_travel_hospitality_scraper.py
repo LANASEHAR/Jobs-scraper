@@ -322,8 +322,8 @@ def discover_candidates():
         for future in as_completed(futures):
             try:
                 candidates.extend(future.result())
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[SEARCH TASK ERROR] {type(exc).__name__}: {exc}", flush=True)
     for company in SEED_COMPANIES:
         candidates.append((company, ""))
 
@@ -376,8 +376,8 @@ def discover():
                 record = future.result()
                 if record:
                     records.append(record)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[COMPANY ENRICH ERROR] {type(exc).__name__}: {exc}", flush=True)
 
     unique = {}
     for record in records:
@@ -406,8 +406,16 @@ def post(records):
             try:
                 response = requests.post(WEBHOOK, json=payload, timeout=90)
                 print("[WEBHOOK]", response.status_code, response.text[:300], flush=True)
-                if response.ok:
-                    break
+                response.raise_for_status()
+                try:
+                    result = response.json()
+                except ValueError as exc:
+                    raise RuntimeError("Webhook returned non-JSON response") from exc
+                if result.get("status") != "success":
+                    raise RuntimeError(f"Webhook rejected batch: {result!r}")
+                if int(result.get("added", 0) or 0) == 0:
+                    print("[WEBHOOK WARNING] accepted request but added=0; check duplicates, sheet mapping, and Apps Script response", flush=True)
+                break
             except requests.RequestException as exc:
                 print("[WEBHOOK ERROR]", exc, flush=True)
             time.sleep(2 * (attempt + 1))
