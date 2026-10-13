@@ -74,17 +74,27 @@ def search(query, limit=8):
  return out
 
 def emails_from(html):
- text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", html or "", flags=re.I)
+ """Extract addresses from visible page text and mailto links, never raw HTML attributes."""
+ if not html:
+  return set()
+ soup = BeautifulSoup(html, "html.parser")
+ text = soup.get_text(" ", strip=True)
+ text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", text, flags=re.I)
  text = re.sub(r"\s*(?:\[dot\]|\(dot\)|\{dot\})\s*", ".", text, flags=re.I)
- soup = BeautifulSoup(text, "html.parser")
  found = set(EMAIL_RE.findall(text))
  for a in soup.select('a[href^="mailto:"]'):
   found.add(a.get("href","")[7:].split("?",1)[0])
  result = set()
- for e in found:
-  e = e.lower().strip(" .;,<>")
-  if EMAIL_RE.fullmatch(e) and e.split("@",1)[1] not in BAD and e.split("@",1)[0] not in {"noreply","no-reply","donotreply","postmaster"}:
-   result.add(e)
+ for raw in found:
+  e = raw.lower().strip(" .;,<>")
+  if not EMAIL_RE.fullmatch(e):
+   continue
+  local, domain = e.split("@",1)
+  if domain in BAD or local in {"noreply","no-reply","donotreply","postmaster","name","you","user","test","email","yourname"}:
+   continue
+  if re.search(r"\.(?:png|jpe?g|gif|webp|svg|css|js|woff2?)$", local, re.I):
+   continue
+  result.add(e)
  return result
 
 def company_name(title, html):
