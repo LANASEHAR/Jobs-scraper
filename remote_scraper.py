@@ -793,15 +793,30 @@ def public_web_jobs():
     return out
 
 def extract_emails(html):
-    text=re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*","@",html,flags=re.I)
-    text=re.sub(r"\s*(?:\[dot\]|\(dot\)|\{dot\})\s*",".",text,flags=re.I)
-    soup=BeautifulSoup(text,"html.parser")
-    found=set(EMAIL_RE.findall(text))
-    for a in soup.select('a[href^="mailto:"]'):
-        found.add(a.get("href","")[7:].split("?")[0])
-    return {e.lower().strip(" .;,<>\"'") for e in found
-            if "@" in e and e.lower().split("@")[-1] not in BAD_EMAIL_DOMAINS
-            and not e.lower().startswith(("noreply@","no-reply@","privacy@","security@"))}
+    """Extract real email addresses from readable page text and mailto links only.
+    Never scan raw HTML attributes: image filenames and tracking IDs can look like emails.
+    """
+    if not html:
+        return set()
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s*(?:\[at\]|\(at\)|\{at\})\s*", "@", text, flags=re.I)
+    text = re.sub(r"\s*(?:\[dot\]|\(dot\)|\{dot\})\s*", ".", text, flags=re.I)
+    found = set(EMAIL_RE.findall(text))
+    for anchor in soup.select('a[href^="mailto:"]'):
+        found.add(anchor.get("href", "")[7:].split("?", 1)[0])
+    result = set()
+    for raw in found:
+        email = raw.lower().strip(" .;,<>\"'")
+        if not EMAIL_RE.fullmatch(email):
+            continue
+        local, domain = email.rsplit("@", 1)
+        if domain in BAD_EMAIL_DOMAINS or local in {"noreply", "no-reply", "privacy", "security", "postmaster"}:
+            continue
+        if re.search(r"\.(?:png|jpe?g|gif|webp|svg|css|js|woff2?)$", local, re.I):
+            continue
+        result.add(email)
+    return result
 
 def official_site(company):
     if not company or clean(company).lower() in {"unknown","indeed employer","linkedin employer"}: return ""
