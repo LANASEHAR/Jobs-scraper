@@ -18,6 +18,7 @@ PATHS = ("", "contact", "contact-us", "about", "about-us", "company", "team", "o
  "imprint", "impressum", "fr/contact", "en/contact", "de/kontakt")
 HEADERS = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
  "Accept-Language":"en-US,en;q=0.9,fr;q=0.8,de;q=0.7"}
+BLOCKED_RUNTIME = set()
 QUERIES = [
  "SaaS companies official website contact email", "travel technology companies contact",
  "hospitality technology companies contact", "ecommerce platforms company contact",
@@ -46,12 +47,16 @@ def blocked(url):
  return not h or any(h == d or h.endswith("." + d) for d in BLOCKED) or any(w in h for w in JOB_WORDS)
 
 def get(url):
+ h = host(url)
+ if h in BLOCKED_RUNTIME:
+  return "", url
  try:
   r = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
   if r.status_code == 200 and "text/html" in r.headers.get("content-type", "text/html"):
    return r.text, r.url
   if r.status_code in (401, 403, 429):
-   print(f"[HTTP BLOCKED] {r.status_code} {host(url)}; skipping host and relying on other public sources", flush=True)
+   BLOCKED_RUNTIME.add(h)
+   print(f"[HTTP BLOCKED] {r.status_code} {h}; skipping host and relying on other public sources", flush=True)
   elif r.status_code not in (404, 410):
    print(f"[HTTP SKIP] {r.status_code} {url}", flush=True)
  except requests.RequestException as exc:
