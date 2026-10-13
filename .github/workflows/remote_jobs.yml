@@ -1,15 +1,12 @@
-name: Jobs + Company Email Scraper
+name: Jobs + Company Email Scraper (4h30 Session)
 
 on:
-  workflow_dispatch:
-  # Two scheduled runs per day; allow discovery and email enrichment to finish.
+  workflow_dispatch:  # Permet de lancer le scraper manuellement avec un clic
   schedule:
-    - cron: '13 5 * * *'
-    - cron: '37 17 * * *'
+    - cron: '0 6 * * *'  # Se lance automatiquement chaque jour à 06:00 UTC
 
 concurrency:
   group: remote-jobs-scraper
-  # Keep the active scrape running when another trigger arrives.
   cancel-in-progress: false
 
 permissions:
@@ -17,43 +14,29 @@ permissions:
 
 jobs:
   scrape:
-    name: Jobs + spontaneous company discovery
+    name: Scrape LinkedIn, Indeed, Remote APIs & Extract Emails
     runs-on: ubuntu-latest
-    # Discovery can use up to 40 minutes; the second pass needs its own budget.
-    timeout-minutes: 150
+    timeout-minutes: 270  # 4h30 d'exécution continue maximum
+
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements.txt
-      - run: pip install -r requirements.txt
-      - name: Validate scraper syntax
-        run: python -m py_compile remote_scraper.py email_enricher.py
-      - name: Discover jobs, then hunt Casablanca companies
-        timeout-minutes: 50
-        env:
-          GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-          PYTHONUNBUFFERED: '1'
-        run: |
-          for attempt in 1 2 3; do
-            echo "Discovery attempt $attempt/3"
-            python remote_scraper.py --mode scrape && exit 0
-            [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
-          done
-          exit 1
 
-      - name: Second-pass company and email enrichment
-        if: always()
-        timeout-minutes: 90
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Scraper Engine (4h30)
         env:
           GOOGLE_SHEET_WEBHOOK_URL: ${{ secrets.GOOGLE_SHEET_WEBHOOK_URL }}
-          PYTHONUNBUFFERED: '1'
+          MAX_RUNTIME_HOURS: 4.5
         run: |
-          for attempt in 1 2 3; do
-            echo "Email enrichment attempt $attempt/3"
-            python email_enricher.py && exit 0
-            [ "$attempt" -eq 3 ] || sleep $((attempt * 10))
-          done
-          exit 1
+          python remote_scraper.py
