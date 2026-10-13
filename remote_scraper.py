@@ -882,10 +882,23 @@ def enrich_one(j):
     site=j.get("company_site") or official_site(company)
     if not site:
         return {"company_site":"","emails_rh":"","deep_status":"NO_SITE","email_status":"NO_EMAIL","email_source":""}
-    p=urlparse(site); base=f"{p.scheme}://{p.netloc}"
+    p=urlparse(site)
+    site_host=host(site)
+    # Never crawl guessed contact paths on login/identity tenants or known aggregators.
+    invalid_site_hosts=("onelogin.com","okta.com","auth0.com","accounts.google.com",
+                        "login.microsoftonline.com","careerjet","jooble","talent.com",
+                        "simplyhired","glassdoor.com","indeed.com","linkedin.com",
+                        "rekrute.com","emploi.ma","novojob.com")
+    if any(site_host==x or site_host.endswith("."+x) or x in site_host for x in invalid_site_hosts):
+        return {"company_site":"","emails_rh":"","deep_status":"INVALID_SITE","email_status":"PENDING","email_source":""}
+    base=f"{p.scheme or 'https'}://{p.netloc}"
     emails=set()
     pages=False
     for path in PATHS:
+        # A timeout/redirect loop marks a host unreliable; stop probing its remaining guessed paths.
+        with FETCH_CACHE_LOCK:
+            if site_host in UNRELIABLE_HOSTS_RUN or site_host in BLOCKED_HOSTS_RUN:
+                break
         h=fetch(base+path,DEEP_TIMEOUT,0)
         if h:
             pages=True; emails |= extract_emails(h)
