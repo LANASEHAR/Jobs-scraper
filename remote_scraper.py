@@ -12,6 +12,9 @@ from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from jobspy import scrape_jobs
 
+# Feature flag: allow disabling LinkedIn integration via env var.
+LINKEDIN_API_DISABLED = os.getenv("LINKEDIN_API_DISABLED", "false").lower() in ("1", "true", "yes")
+
 WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "").strip()
 MAX_HOURS = float(os.getenv("MAX_RUNTIME_HOURS", "4.5"))
 
@@ -25,6 +28,7 @@ EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 EXCLUDE_DOMAINS = {"example.com", "sentry.io", "google.com", "wixpress.com", "schema.org"}
 EXCLUDE_PREFIX = {"noreply", "no-reply", "mailer-daemon", "donotreply", "support-auto"}
 
+
 def get_session():
     s = requests.Session()
     s.headers.update({
@@ -36,9 +40,15 @@ def get_session():
 
 SESSION = get_session()
 
+
 def scrape_linkedin_and_indeed(query="Customer Success Manager", location="Casablanca", is_remote=False):
     print(f"[*] Scraping Indeed & LinkedIn : '{query}' @ '{location}' (Remote={is_remote})...")
-    site_list = ["indeed", "linkedin"]
+    site_list = ["indeed"]
+    if not LINKEDIN_API_DISABLED:
+        site_list.append("linkedin")
+    else:
+        print("[LinkedIn] LinkedIn API integration is disabled by environment flag; skipping LinkedIn.")
+
     try:
         jobs = scrape_jobs(
             site_name=site_list,
@@ -70,6 +80,9 @@ def scrape_linkedin_and_indeed(query="Customer Success Manager", location="Casab
     except Exception as e:
         print(f"[!] Info/Erreur JobSpy : {e}")
         return []
+
+# Small syntax fix: replace Java-style comment with Python comment.
+# Native board crawling: each board is treated as its own source.
 
 def scrape_remote_apis():
     jobs = []
