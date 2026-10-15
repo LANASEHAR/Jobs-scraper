@@ -360,30 +360,54 @@ def enrich(job):
     }
 
 def webhook(payload):
+    """Call the Google Sheets webhook; be tolerant to 404s and other non-fatal HTTP errors.
+
+    Returns the parsed JSON response on success, or None on failure. Does not raise.
+    """
     if not WEBHOOK:
-        raise RuntimeError("GOOGLE_SHEET_WEBHOOK_URL is missing")
+        print("[WEBHOOK] GOOGLE_SHEET_WEBHOOK_URL is missing", flush=True)
+        return None
     last_error = None
     for attempt in range(3):
         try:
             r = session().post(WEBHOOK, json=payload, timeout=45,
                                headers={"Content-Type": "application/json"})
+            # Treat 404 as non-fatal but log and return None so the caller can decide.
+            if r.status_code == 404:
+                print(f"[WEBHOOK 404] {WEBHOOK} returned 404 for payload mode={payload.get('mode')}", flush=True)
+                return None
             r.raise_for_status()
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError as ve:
+                print(f"[WEBHOOK] invalid JSON response: {ve}", flush=True)
+                return None
             if data.get("status") != "success":
-                raise RuntimeError(f"Unexpected Google Sheets webhook response: {data!r}")
+                print(f"[WEBHOOK] unexpected response: {data!r}", flush=True)
+                return None
             return data
         except (requests.RequestException, ValueError, RuntimeError) as exc:
             last_error = exc
+            print(f"[WEBHOOK WARNING] attempt={attempt+1} error={type(exc).__name__} {exc}", flush=True)
             if attempt < 2:
                 time.sleep(2 ** attempt)
-    raise RuntimeError(f"Google Sheets webhook failed after 3 attempts: {last_error}")
+    print(f"[WEBHOOK ERROR] failed after 3 attempts: {last_error}", flush=True)
+    return None
 
 def main():
     sheets = ("Worldwide Remote", "Morocco Remote", "Casablanca Onsite", "Casablanca Spontaneous")
     by_sheet, seen = {}, set()
     # Bound each run and interleave sheets so one large board cannot starve others.
     for sheet in sheets:
-        data = webhook({"mode": "pending", "limit": PENDING_SCAN_PER_SHEET, "sheet": sheet})
+        try:
+            data = webhook({"mode": "pending", "limit": PENDING_SCAN_PER_SHEET, "sheet": sheet})
+        except Exception as exc:
+            print(f"[WEBHOOK EXCEPTION] sheet={sheet} {exc}", flush=True)
+            data = None
+        if not data:
+            print(f"[WEBHOOK SKIP] no pending data for sheet={sheet}; continuing", flush=True)
+            by_sheet[sheet] = []
+            continue
         rows = []
         for job in data.get("jobs", []):
             key = (sheet, clean(job.get("ID", job.get("id", ""))))
@@ -434,8 +458,14 @@ def main():
                     updates.append(failed)
                 print(f"[EMAIL ERROR] row={idx}: {error}", flush=True)
                 if len(updates) >= 25:
-                    webhook({"mode": "enrich", "updates": updates})
-                    updates = []
+                    try:
+                        webhook({"mode": "enrich", "updates": updates})
+                        updates = []
+                    except Exception as e:
+                        print(f"[SHEETS WRITE ERROR] {e}; retrying once", flush=True)
+                        time.sleep(2)
+                        webhook({"mode": "enrich", "updates": updates})
+                        updates = []
                 continue
             if not update["id"]:
                 continue
@@ -450,10 +480,16 @@ def main():
                 except Exception as e:
                     print(f"[SHEETS WRITE ERROR] {e}; retrying once", flush=True)
                     time.sleep(2)
-                    webhook({"mode": "enrich", "updates": updates})
+                    try:
+                        webhook({"mode": "enrich", "updates": updates})
+                    except Exception as e2:
+                        print(f"[SHEETS WRITE ERROR] retry failed: {e2}", flush=True)
                 updates = []
     if updates:
-        webhook({"mode": "enrich", "updates": updates})
+        try:
+            webhook({"mode": "enrich", "updates": updates})
+        except Exception as e:
+            print(f"[SHEETS FINAL WRITE ERROR] {e}", flush=True)
     print(f"[EMAIL ENRICH DONE] processed={len(all_jobs)} companies_with_emails={found_count} errors={error_count}", flush=True)
 
 if __name__ == "__main__":
